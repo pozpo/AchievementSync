@@ -1,6 +1,5 @@
 # AchievementSync
-
-Windows desktop achievement manager and GitHub synchronizer.
+Windows desktop achievement manager and GitHub synchronizer
 
 AchievementSync scans configured local folders for supported achievement profiles, displays progress, and can optionally sync a reviewed set of viewer-compatible JSON files to a public repository owned by the signed-in GitHub user. Local profile files are read only.
 

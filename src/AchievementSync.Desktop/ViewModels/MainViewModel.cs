@@ -70,7 +70,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            _isGitHubSignedIn = !string.IsNullOrWhiteSpace(_githubTokenStore.Read());
+            _isGitHubSignedIn = GitHubStoredCredential.Parse(_githubTokenStore.Read()) is not null;
         }
         catch (Exception exception)
         {
@@ -353,9 +353,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
             GitHubStatus = "Waiting for approval in the browser…";
             var token = await _githubDeviceFlow.PollForTokenAsync(GitHubOAuthConfiguration.ClientId, session);
             var account = await _githubSyncClient.GetCurrentUserAsync(token.AccessToken);
-            _githubTokenStore.Write(token.AccessToken);
+            if (!account.HasPublicRepositoryAccess)
+                throw new GitHubAuthorizationException("GitHub did not grant the required public_repo permission. Review the authorization request and connect again.");
+            _githubTokenStore.Write(token.ToStoredCredential().Serialize());
             var previousLogin = _settings.GitHubLogin;
             _settings.GitHubLogin = account.Login;
+            if (string.IsNullOrWhiteSpace(_settings.GitHubOwner)) _settings.GitHubOwner = account.Login;
+            if (string.IsNullOrWhiteSpace(_settings.GitHubRepository)) _settings.GitHubRepository = "achievement-viewer";
+            if (string.IsNullOrWhiteSpace(_settings.GitHubBranch)) _settings.GitHubBranch = "user";
             if (!string.Equals(previousLogin, account.Login, StringComparison.OrdinalIgnoreCase))
             {
                 _settings.AutoSyncAfterScan = false;
@@ -404,7 +409,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task BuildGitHubPreviewAsync()
     {
-        var token = ReadGitHubToken();
+        var token = await ReadGitHubTokenAsync();
         if (token is null) return;
         IsGitHubBusy = true;
         GitHubStatus = "Checking your repository and merging achievement progress…";
@@ -439,7 +444,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             SelectedExport = null;
             OnPropertyChanged(nameof(HasPreviewFiles));
             OnPropertyChanged(nameof(CanPushGitHubPreview));
-            GitHubStatus = exception is GitHubApiException or ArgumentException or InvalidDataException
+            if (exception is GitHubAuthorizationException authorizationFailure)
+                HandleGitHubAuthorizationFailure(authorizationFailure);
+            GitHubStatus = exception is GitHubAuthorizationException or GitHubApiException or ArgumentException or InvalidDataException
                 ? exception.Message
                 : "Could not build a GitHub preview. Check the local log.";
             AppLog.Warning($"GitHub preview failed: {exception.GetType().Name}.");
@@ -452,7 +459,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task PushGitHubPreviewAsync(bool requireConfirmation = true)
     {
-        var token = ReadGitHubToken();
+        var token = await ReadGitHubTokenAsync();
         var preview = _githubPreview;
         if (token is null || preview is null || preview.Changes.Count == 0) return;
 
@@ -487,7 +494,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             _githubPreview = null;
             OnPropertyChanged(nameof(CanPushGitHubPreview));
-            GitHubStatus = exception is GitHubApiException
+            if (exception is GitHubAuthorizationException authorizationFailure)
+                HandleGitHubAuthorizationFailure(authorizationFailure);
+            GitHubStatus = exception is GitHubAuthorizationException or GitHubApiException
                 ? exception.Message
                 : "GitHub push failed. Rebuild the preview before retrying.";
             AppLog.Warning($"GitHub push failed: {exception.GetType().Name}.");
@@ -534,23 +543,78 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void ResetFirstUploadAuthorization() => _settings.HasAuthorizedFirstUpload = false;
 
-    private string? ReadGitHubToken()
+    private async Task<string?> ReadGitHubTokenAsync()
     {
         try
         {
-            var token = _githubTokenStore.Read();
-            if (!string.IsNullOrWhiteSpace(token)) return token;
-            IsGitHubSignedIn = false;
-            GitHubStatus = "GitHub sign-in has expired or was removed. Connect again.";
+            var credential = GitHubStoredCredential.Parse(_githubTokenStore.Read());
+            if (credential is null)
+            {
+                HandleGitHubAuthorizationFailure(new GitHubAuthorizationException("GitHub sign-in has expired or was removed. Connect again."));
+                return null;
+            }
+
+            if (credential.NeedsRefresh())
+            {
+                if (string.IsNullOrWhiteSpace(credential.RefreshToken)
+                    || credential.RefreshTokenExpiresAtUtc is { } refreshExpiry && refreshExpiry <= DateTimeOffset.UtcNow)
+                {
+                    HandleGitHubAuthorizationFailure(new GitHubAuthorizationException("GitHub sign-in expired. Connect your account again."));
+                    return null;
+                }
+
+                try
+                {
+                    var rotated = await _githubDeviceFlow.RefreshAsync(GitHubOAuthConfiguration.ClientId, credential.RefreshToken);
+                    credential = rotated.ToStoredCredential();
+                    _githubTokenStore.Write(credential.Serialize());
+                    AppLog.Info("GitHub access token refreshed.");
+                }
+                catch (GitHubAuthorizationException exception)
+                {
+                    HandleGitHubAuthorizationFailure(exception);
+                    return null;
+                }
+            }
+
+            return credential.AccessToken;
+        }
+        catch (GitHubAuthorizationException)
+        {
             return null;
         }
         catch (Exception exception)
         {
             IsGitHubSignedIn = false;
-            GitHubStatus = "Could not read the secure GitHub credential. Check Windows Credential Manager.";
+            GitHubStatus = "Could not read or refresh the secure GitHub credential. Check Windows Credential Manager or connect again.";
             AppLog.Warning($"Could not read GitHub credential: {exception.GetType().Name}.");
             return null;
         }
+    }
+
+    private void HandleGitHubAuthorizationFailure(GitHubAuthorizationException exception)
+    {
+        try
+        {
+            _githubTokenStore.Delete();
+        }
+        catch (Exception storageException)
+        {
+            AppLog.Warning($"Could not remove rejected GitHub credential: {storageException.GetType().Name}.");
+        }
+        IsGitHubSignedIn = false;
+        _settings.GitHubLogin = string.Empty;
+        _settings.AutoSyncAfterScan = false;
+        _settings.HasAuthorizedFirstUpload = false;
+        OnPropertyChanged(nameof(AutoSyncAfterScan));
+        SaveSettings();
+        _githubPreview = null;
+        ExportFiles.Clear();
+        SelectedExport = null;
+        OnPropertyChanged(nameof(HasPreviewFiles));
+        OnPropertyChanged(nameof(CanPushGitHubPreview));
+        PreviewStatus = "GitHub authorization is no longer active. Connect again before previewing changes.";
+        GitHubStatus = exception.Message;
     }
 
     private void InvalidateGitHubPreview()

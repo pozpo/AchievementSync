@@ -2,7 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AchievementSync.Core\AchievementSync.Core.csproj" />
-    <Resource Include="Assets\AchievementSync.ico" />
+    <Resource Include="..\..\assets\AchievementSync.ico" Link="Assets\AchievementSync.ico" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -12,10 +12,12 @@
     <AssemblyVersion>0.1.2.0</AssemblyVersion>
     <FileVersion>0.1.2.0</FileVersion>
     <InformationalVersion>0.1.2-preview</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AssemblyName>AchievementSync</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>Assets\AchievementSync.ico</ApplicationIcon>
+    <ApplicationIcon>..\..\assets\AchievementSync.ico</ApplicationIcon>
     <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">$(ACHIEVEMENTSYNC_GITHUB_CLIENT_ID)</AchievementSyncGitHubClientId>
   </PropertyGroup>
 

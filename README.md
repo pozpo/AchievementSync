@@ -1,81 +1,72 @@
 # AchievementSync
 
-AchievementSync is a Windows desktop app for finding local game achievement profiles, viewing progress, and optionally syncing viewer-compatible achievement data to a public GitHub repository. Version 0.1.2 adds GitHub Device Flow sign-in, exact remote previews, and explicit content-only pushes. Local scans remain read-only.
+Windows desktop achievement manager and GitHub synchronizer.
 
-**This remains a preview release. GitHub sync requires a publisher-configured OAuth App Client ID and an account-owned public repository. Scanning and previewing never upload data. Manual pushes and the first automatic push require separate confirmation; later automatic pushes are available only after the user deliberately enables them. Durable sync history and an installer are not implemented.**
+AchievementSync scans configured local folders for supported achievement profiles, displays progress, and can optionally sync a reviewed set of viewer-compatible JSON files to a public repository owned by the signed-in GitHub user. Local profile files are read only.
 
 ![AchievementSync sync activity page](docs/screenshots/sync-activity.jpg)
 
-The screenshot shows the empty sync activity page and contains no local game or achievement data.
+This reference screenshot is from an earlier preview and contains no local game or achievement data. It will be refreshed after the current desktop window can be inspected.
 
-## What works now
+## Current capabilities
 
-- Recursively scans the configured locations and reports missing folders as unavailable.
-- Lets users add, remove, enable, and disable custom scan folders.
-- Reads JSON progress objects, JSON-array `.db` profiles, Goldberg-style achievement catalogs, `achievements.ini`, and `achiev.ini` progress sections.
-- Reads the viewer's `game-info.json` catalog alongside `achievements.json` progress files.
-- Merges profiles by numeric Steam AppID and unions achievements, preserving a known unlock if another source is older or incomplete.
-- Marks unknown unlock states as unknown. It does not turn an incomplete file into a fabricated locked state or completion percentage.
-- Looks up game names and Steam Store header artwork using only the AppID; caches successful and unsuccessful lookups locally.
-- Lets users assign a display name manually when lookup fails.
-- Builds a local-only preview of `AppID/<appid>/achievements.json`; unknown unlock states are omitted.
-- Supports GitHub Device Flow when the publisher's public OAuth Client ID is configured. Tokens are kept in the current Windows user's Credential Manager, never in settings or logs.
-- Verifies a public repository owned by the signed-in account, merges remote and local achievement states, and displays exact changed JSON files before a separately confirmed push.
-- Pushes one content-only GitHub commit containing only changed `AppID/<numeric id>/achievements.json` files. Remote unlocks are unioned and retained; invalid JSON or a changed branch stops safely.
-- Offers opt-in automatic sync after scans (including the startup scan). Enabling it requires explicit confirmation; the first automatic push still presents the full preview and asks for approval.
-- Keeps original local profiles unchanged and writes logs under `%LocalAppData%\AchievementSync\Logs` when the current account permits it.
+- Recursively scans known and custom folders; missing folders appear as unavailable and do not stop a scan.
+- Reads supported JSON and database profiles, Goldberg-style catalogs, viewer `game-info.json`, and partial INI progress.
+- Merges duplicate profiles by numeric AppID while preserving confirmed unlocks and unknown states.
+- Looks up Steam Store game names and header artwork by AppID, caches results, and supports manual title overrides.
+- Shows dashboard progress, recent unlocks, game details, achievement descriptions, and known timestamps.
+- Previews compatible `AppID/<appid>/achievements.json` exports without uploading.
+- Uses GitHub OAuth Device Flow; tokens and refresh tokens are kept in the current Windows user's Credential Manager.
+- Confirms the signed-in account, checks that the selected repository is public and pushable, validates the branch, and shows exact JSON changes before upload.
+- Commits only reviewed `AppID/<numeric id>/achievements.json` files. Existing remote unlocks are retained, and branch updates are non-forced.
+- Keeps automatic sync disabled until the user explicitly enables it. The first automatic upload still requires a separate preview and confirmation.
 
-## Build and run from source
+Some formats are only partially supported. A scan location being listed does not mean every format used there is understood. See [the archive review](docs/guides/ARCHIVE_REVIEW.md) and [the architecture guide](docs/guides/ARCHITECTURE.md).
 
-Requirements: Windows 10 or 11, the .NET 10 SDK, and the .NET 10 Desktop Runtime. The solution uses WPF and has no third-party NuGet packages.
+## Install and update
+
+The current portable Windows x64 build is `output/AchievementSync.exe`. It is self-contained and embeds the AchievementSync application icon. Close the app before replacing it with a later manually downloaded release. There is currently no installer or in-app updater.
+
+Development builds always target the same path, `C:\AchievementSync\output\AchievementSync.exe`. The publisher builds and checks a temporary staged executable before atomically replacing the existing file. Assembly and file version metadata stay at their existing values during ordinary development; public release versions change only for an explicitly requested release. Older ignored builds under `dist` are being kept intact pending cleanup review.
+
+## Build from source
+
+Requirements: Windows 10 or 11 and the .NET 10 SDK. WPF and the package-free functional checks use no third-party NuGet packages.
 
 ```powershell
 dotnet build AchievementSync.sln -m:1
+dotnet run --project tests/AchievementSync.SmokeTests/AchievementSync.SmokeTests.csproj
 dotnet run --project src/AchievementSync.Desktop/AchievementSync.Desktop.csproj
 ```
 
-Run the package-free functional checks with:
+Check the Windows Credential Manager implementation using an isolated synthetic target (the test entry is removed afterward):
 
 ```powershell
-dotnet run --project tests/AchievementSync.SmokeTests/AchievementSync.SmokeTests.csproj
+dotnet build AchievementSync.sln --configuration Release -m:1
+./scripts/verify-credential-store.ps1
 ```
 
-The Windows desktop project is `src/AchievementSync.Desktop`; UI-independent parsing and scanning code is in `src/AchievementSync.Core`.
-
-Create a self-contained x64 Windows executable with the supplied AchievementSync logo embedded as its Windows application icon:
+Create the self-contained executable after the build and functional checks pass:
 
 ```powershell
+$env:ACHIEVEMENTSYNC_GITHUB_CLIENT_ID = '<your public GitHub OAuth App Client ID>'
 ./scripts/publish-windows.ps1
 ```
 
-The single-file executable is written to `dist/AchievementSync-0.1.2-win-x64/AchievementSync.Desktop.exe`. The `dist` folder is ignored by Git. This is a portable executable, not an installer.
+The script stages the publish under `output/.staging`, then updates only `output/AchievementSync.exe`. It leaves the old executable in place if build, checks, or publish fail. Do not set a Client Secret or access token; Device Flow does not require a distributed client secret.
 
-### Configure GitHub sign-in for a public release
+The project layout is described in [docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md). Current progress and the exact next task are tracked in [docs/DEVELOPMENT_STATUS.md](docs/DEVELOPMENT_STATUS.md). Potential artifact cleanup is listed in [docs/CLEANUP_PLAN.md](docs/CLEANUP_PLAN.md).
 
-The publisher must register a GitHub OAuth App, enable Device Flow, and provide its public **Client ID** when building a release. Do not create or distribute a Client Secret. Set `ACHIEVEMENTSYNC_GITHUB_CLIENT_ID` in the release build environment and run the publish script, or pass `-GitHubOAuthClientId` to it. If the ID is absent, sign-in is disabled while local scanning and preview continue to work. The checked-in preview has no publisher OAuth App Client ID, so sign-in is not enabled in that build.
+## GitHub setup and privacy
 
-Sync supports public repositories only and requires the repository owner to match the signed-in account. AchievementSync writes directly to the selected branch through GitHub's Git Data API; no local repository checkout or Git installation is needed. Automatic sync runs only after a completed scan and after the user opts in; interval-based scheduling, durable sync history, and local repository mirroring remain future work. OAuth scope is limited to `public_repo`.
+The app repository is [pozpo/AchievementSync](https://github.com/pozpo/AchievementSync). This is separate from the achievement data repository. A user must connect their own public fork of `pozpo/achievement-viewer` or another compatible public repository, owned by the account they signed into. The default target branch is `user`; the account, owner, repository, and branch can be reviewed in Settings/Sync Activity.
 
-There is no in-app updater yet. Users should download the latest executable from the repository's Releases page, close AchievementSync, and replace the previous portable executable with the new one.
+Scanning and preview do not send achievement data to GitHub. A sync sends only the changed achievement identifiers, earned states, and available timestamps in the reviewed JSON paths. It never sends original save files, local paths, emulator configuration, credentials, or other repository files. GitHub uploads always require explicit review and confirmation, except later automatic uploads only after the user opted in; the first automatic upload still requires confirmation.
 
-## Scanned locations and supported data
+The OAuth publisher must register a GitHub OAuth App, enable Device Flow, and supply the public Client ID via `ACHIEVEMENTSYNC_GITHUB_CLIENT_ID` when publishing. No Client Secret is packaged. The app requests `public_repo` only and checks the granted permission after sign-in. Refresh tokens are rotated when expiring access tokens are enabled. OAuth consent must be completed by the user in GitHub.
 
-The default location list covers CODEX, RUNE, OnlineFix, EMPRESS, Goldberg SteamEmu and UplayEmu, R1 UplayEmu, GSE, Nemirtingas Epic Emu, anadius Achievement Watcher, SmartSteamEmu, SKIDROW, UniverseLAN, Achievement Watcher caches, CreamAPI, and Steam ProgramData. Missing folders are safe to ignore. Custom roots are stored in `%LocalAppData%\AchievementSync\settings.json`.
+For local name/art lookup, AppIDs may be sent to Steam's public Store metadata endpoint and the returned Steam-hosted header image may be cached. No unlock state or local path is sent to Steam. Metadata is cached under `%LocalAppData%\AchievementSync\Metadata`.
 
-File discovery looks for `achievements.json`, `achievements.ini`, `achiev.ini`, and `.db` files. Supported formats vary by source. A location being scanned does not mean every file under it has a supported achievement format. INI files currently provide partial progress, not a full achievement catalog. The archive review in [docs/ARCHIVE_REVIEW.md](docs/ARCHIVE_REVIEW.md) records which supplied formats were directly reusable.
+## License
 
-## Privacy and network access
-
-Local achievement files are read only. Their contents, paths, unlock dates, and identifiers are not sent to Steam. For each discovered numeric AppID, the app may request public game name and header-art metadata from the Steam Store and fetch the returned Steam-hosted image. Those results are cached under `%LocalAppData%\AchievementSync\Metadata`. If Steam is unavailable, the app keeps the AppID fallback.
-
-Scanning and building a local preview never contact GitHub. On sign-in, the app uses GitHub Device Flow and stores the token only in Windows Credential Manager. Manual pushes and the first automatic push display every exact destination path and merged JSON, then ask for separate confirmation. After a user explicitly enables automatic sync, later changes may be pushed after a scan without another prompt; the preview remains visible in Sync activity. Only achievement JSON is sent to the selected public repository. Achievement IDs, earned states, and available unlock timestamps become visible to its viewers. Original save files, local paths, emulator configuration, and credentials are never sent. Branch updates are non-forced; stale previews must be rebuilt.
-
-## License and third-party content
-
-The new AchievementSync application code is licensed under MIT; see [LICENSE](LICENSE). .NET is a Microsoft dependency. Steam names and artwork are fetched at runtime and are not bundled. No emulator executables, DLLs, patches, or supplied third-party binaries are distributed.
-
-The supplied archives did not provide enough license provenance to safely redistribute their bundled tools. They were inspected for format and workflow information only. See [docs/ARCHIVE_REVIEW.md](docs/ARCHIVE_REVIEW.md) for details.
-
-## Release status
-
-The 0.1.2 preview can be packaged as a self-contained x64 Windows executable with the supplied logo embedded. It is not an installer. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for milestone status, release setup, and remaining limitations. No real account or repository has been used in sync tests; behavior is tested against synthetic HTTP responses.
+The AchievementSync application source and documentation are licensed under MIT; see [LICENSE](LICENSE). The supplied emulator archives and user achievement data are not included in the distribution. No third-party emulator executables, DLLs, patches, or copyrighted artwork are bundled.

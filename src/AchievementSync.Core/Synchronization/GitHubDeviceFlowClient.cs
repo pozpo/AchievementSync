@@ -49,6 +49,7 @@ public sealed class GitHubDeviceFlowClient
         while (DateTimeOffset.UtcNow < deadline)
         {
             await _delay(TimeSpan.FromSeconds(interval), cancellationToken);
+            if (DateTimeOffset.UtcNow >= deadline) break;
             using var request = CreateFormRequest(AccessTokenEndpoint, new Dictionary<string, string>
             {
                 ["client_id"] = clientId,
@@ -62,14 +63,15 @@ public sealed class GitHubDeviceFlowClient
             switch (error)
             {
                 case null:
-                    return new GitHubDeviceToken(RequiredString(root, "access_token"), OptionalString(root, "token_type") ?? "bearer", OptionalString(root, "scope") ?? "");
+                    return ReadToken(root);
                 case "authorization_pending":
                     continue;
                 case "slow_down":
-                    interval = checked(interval + 5);
+                    interval = Math.Max(checked(interval + 5), OptionalInt(root, "interval") ?? 0);
                     continue;
                 case "access_denied":
                     throw new GitHubAuthorizationException("GitHub authorization was declined.");
+                case "token_expired":
                 case "expired_token":
                     throw new GitHubAuthorizationException("The GitHub device code expired. Start sign-in again.");
                 default:
@@ -77,6 +79,35 @@ public sealed class GitHubDeviceFlowClient
             }
         }
         throw new GitHubAuthorizationException("The GitHub device code expired. Start sign-in again.");
+    }
+
+    /// <summary>Rotates an expiring device-flow token using GitHub's OAuth refresh grant.</summary>
+    public async Task<GitHubDeviceToken> RefreshAsync(
+        string clientId,
+        string refreshToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) throw new ArgumentException("A GitHub OAuth App Client ID is required.", nameof(clientId));
+        if (string.IsNullOrWhiteSpace(refreshToken)) throw new ArgumentException("A GitHub refresh token is required.", nameof(refreshToken));
+        using var request = CreateFormRequest(AccessTokenEndpoint, new Dictionary<string, string>
+        {
+            ["client_id"] = clientId,
+            ["grant_type"] = "refresh_token",
+            ["refresh_token"] = refreshToken
+        });
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var json = await ReadJsonAsync(response, cancellationToken);
+        var root = json.RootElement;
+        if (OptionalString(root, "error") is { } error)
+        {
+            throw new GitHubAuthorizationException(error switch
+            {
+                "bad_refresh_token" => "GitHub sign-in expired or was revoked. Connect your account again.",
+                "incorrect_client_credentials" => "The GitHub OAuth Client ID is not recognized.",
+                _ => "GitHub sign-in could not be refreshed. Connect your account again."
+            });
+        }
+        return ReadToken(root);
     }
 
     private static HttpRequestMessage CreateFormRequest(Uri endpoint, IReadOnlyDictionary<string, string> values)
@@ -115,6 +146,14 @@ public sealed class GitHubDeviceFlowClient
             });
     }
 
+    internal static GitHubDeviceToken ReadToken(JsonElement root) => new(
+        RequiredString(root, "access_token"),
+        OptionalString(root, "token_type") ?? "bearer",
+        OptionalString(root, "scope") ?? string.Empty,
+        OptionalInt(root, "expires_in"),
+        OptionalString(root, "refresh_token"),
+        OptionalInt(root, "refresh_token_expires_in"));
+
     internal static string RequiredString(JsonElement element, string propertyName) =>
         OptionalString(element, propertyName) ?? throw new GitHubApiException("GitHub returned an incomplete response.");
 
@@ -137,5 +176,56 @@ public sealed class GitHubDeviceFlowClient
 }
 
 public sealed record GitHubDeviceSession(string DeviceCode, string UserCode, Uri VerificationUri, int ExpiresInSeconds, int IntervalSeconds);
-public sealed record GitHubDeviceToken(string AccessToken, string TokenType, string Scope);
+public sealed record GitHubDeviceToken(
+    string AccessToken,
+    string TokenType,
+    string Scope,
+    int? ExpiresInSeconds = null,
+    string? RefreshToken = null,
+    int? RefreshTokenExpiresInSeconds = null)
+{
+    public GitHubStoredCredential ToStoredCredential(DateTimeOffset? now = null)
+    {
+        var created = now ?? DateTimeOffset.UtcNow;
+        return new GitHubStoredCredential(
+            AccessToken,
+            TokenType,
+            Scope,
+            ExpiresInSeconds is > 0 ? created.AddSeconds(ExpiresInSeconds.Value) : null,
+            RefreshToken,
+            RefreshTokenExpiresInSeconds is > 0 ? created.AddSeconds(RefreshTokenExpiresInSeconds.Value) : null);
+    }
+}
+
+public sealed record GitHubStoredCredential(
+    string AccessToken,
+    string TokenType,
+    string Scope,
+    DateTimeOffset? AccessTokenExpiresAtUtc,
+    string? RefreshToken,
+    DateTimeOffset? RefreshTokenExpiresAtUtc)
+{
+    public bool NeedsRefresh(DateTimeOffset? now = null) =>
+        AccessTokenExpiresAtUtc is { } expiry && expiry <= (now ?? DateTimeOffset.UtcNow).AddMinutes(2);
+
+    /// <summary>Reads the current credential payload and migrates legacy plain-text tokens in memory.</summary>
+    public static GitHubStoredCredential? Parse(string? serialized)
+    {
+        if (string.IsNullOrWhiteSpace(serialized)) return null;
+        try
+        {
+            var stored = JsonSerializer.Deserialize<GitHubStoredCredential>(serialized);
+            if (stored is { AccessToken.Length: > 0 }) return stored;
+            if (serialized.TrimStart().StartsWith('{')) return null;
+        }
+        catch (JsonException)
+        {
+            // Older builds stored only the access token; keep it usable until GitHub rejects it.
+        }
+        return new GitHubStoredCredential(serialized, "bearer", string.Empty, null, null, null);
+    }
+
+    public string Serialize() => JsonSerializer.Serialize(this);
+}
+
 public sealed class GitHubAuthorizationException(string message) : Exception(message);

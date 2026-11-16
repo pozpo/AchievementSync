@@ -17,10 +17,15 @@ public sealed class GitHubAchievementSyncClient
     {
         using var response = await SendAsync(HttpMethod.Get, "user", token, null, cancellationToken);
         using var json = await GitHubDeviceFlowClient.ReadJsonAsync(response, cancellationToken);
+        var scopes = response.Headers.TryGetValues("X-OAuth-Scopes", out var scopeHeader)
+            ? scopeHeader.SelectMany(value => value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return new GitHubAccount(
             GitHubDeviceFlowClient.RequiredString(json.RootElement, "login"),
             GitHubDeviceFlowClient.OptionalString(json.RootElement, "name"),
-            GitHubDeviceFlowClient.OptionalString(json.RootElement, "avatar_url"));
+            GitHubDeviceFlowClient.OptionalString(json.RootElement, "avatar_url"),
+            scopes);
     }
 
     public async Task<GitHubRepository> GetRepositoryAsync(
@@ -195,6 +200,12 @@ public sealed class GitHubAchievementSyncClient
             response.Dispose();
             if (status == 409 || status == 422)
                 throw new GitHubConcurrentUpdateException("GitHub rejected the update because the branch changed or the repository no longer matches the preview. Refresh and preview again.");
+            if (status == 401)
+                throw new GitHubAuthorizationException("GitHub rejected the saved sign-in. It may have expired or been revoked; connect your account again.");
+            if (status == 403)
+                throw new GitHubApiException("GitHub denied this request. Check that your account can write public repositories and that the selected repository is public.");
+            if (status == 404)
+                throw new GitHubApiException("GitHub could not find the selected repository or branch. Check the owner, repository name, and branch.");
             throw new GitHubApiException($"GitHub returned HTTP {status}. Check repository access and try again.");
         }
         return response;
@@ -242,7 +253,10 @@ public sealed class GitHubAchievementSyncClient
     }
 }
 
-public sealed record GitHubAccount(string Login, string? DisplayName, string? AvatarUrl);
+public sealed record GitHubAccount(string Login, string? DisplayName, string? AvatarUrl, IReadOnlySet<string> OAuthScopes)
+{
+    public bool HasPublicRepositoryAccess => OAuthScopes.Contains("public_repo");
+}
 public sealed record GitHubRepository(string FullName, string DefaultBranch, bool CanPush, bool IsPrivate);
 public sealed record GitHubSyncTarget(string Owner, string Repository, string Branch);
 public sealed record GitHubSyncChange(string RelativePath, string AppId, string? ExistingJson, string ProposedJson, int AchievementCount, int NewUnlockCount);

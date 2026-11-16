@@ -13,11 +13,15 @@ internal sealed class WindowsCredentialTokenStore
     private const uint GenericCredential = 1;
     private const uint PersistLocal = 2;
     private const int NotFound = 1168;
+    private readonly string _target;
+
+    public WindowsCredentialTokenStore(string target = Target) =>
+        _target = string.IsNullOrWhiteSpace(target) ? throw new ArgumentException("A credential target is required.", nameof(target)) : target;
 
     public string? Read()
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("GitHub sign-in storage requires Windows Credential Manager.");
-        if (!CredRead(Target, GenericCredential, 0, out var credentialPointer))
+        if (!CredRead(_target, GenericCredential, 0, out var credentialPointer))
         {
             var error = Marshal.GetLastWin32Error();
             if (error == NotFound) return null;
@@ -47,7 +51,7 @@ internal sealed class WindowsCredentialTokenStore
 
         var bytes = Encoding.UTF8.GetBytes(token);
         var blobPointer = Marshal.AllocHGlobal(bytes.Length);
-        var targetPointer = Marshal.StringToHGlobalUni(Target);
+        var targetPointer = Marshal.StringToHGlobalUni(_target);
         var usernamePointer = Marshal.StringToHGlobalUni("AchievementSync");
         var zeroedBytes = new byte[bytes.Length];
         try
@@ -78,7 +82,7 @@ internal sealed class WindowsCredentialTokenStore
     public void Delete()
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("GitHub sign-in storage requires Windows Credential Manager.");
-        if (!CredDelete(Target, GenericCredential, 0))
+        if (!CredDelete(_target, GenericCredential, 0))
         {
             var error = Marshal.GetLastWin32Error();
             if (error != NotFound) throw new Win32Exception(error, "Could not remove the AchievementSync token from Windows Credential Manager.");

@@ -4,6 +4,8 @@
 /.dotnet-cli/
 /.solution-build.log
 /dist/
+/output/*
+!/output/.gitkeep
 *.user
 *.suo
 *.log
@@ -14,3 +16,4 @@
 /update_achievements.zip
 /sync_log.txt
 /New Text Document.txt
+/New Text Document (2).txt

@@ -138,7 +138,7 @@ try
         {
             1 => JsonResponse("""{"error":"authorization_pending"}"""),
             2 => JsonResponse("""{"error":"slow_down"}"""),
-            _ => JsonResponse("""{"access_token":"synthetic-token","token_type":"bearer","scope":"public_repo"}""")
+            _ => JsonResponse("""{"access_token":"synthetic-token","token_type":"bearer","scope":"public_repo","expires_in":28800,"refresh_token":"synthetic-refresh","refresh_token_expires_in":15897600}""")
         };
     })))
     {
@@ -149,8 +149,88 @@ try
         });
         var session = await deviceFlow.StartAsync("synthetic-client-id");
         var token = await deviceFlow.PollForTokenAsync("synthetic-client-id", session);
-        Check(session.UserCode == "ABCD-EFGH" && token.AccessToken == "synthetic-token", "GitHub device flow parses a synthetic authorization session");
+        Check(session.UserCode == "ABCD-EFGH" && token.AccessToken == "synthetic-token"
+            && token.RefreshToken == "synthetic-refresh" && token.ExpiresInSeconds == 28800,
+            "GitHub device flow parses synthetic authorization and expiry fields");
         Check(requestedIntervals.SequenceEqual([2, 2, 7]), "GitHub device flow honors polling interval and slow_down response");
+    }
+
+    using (var refreshHttp = new HttpClient(new TestHttpHandler(async (request, cancellationToken) =>
+    {
+        var form = await request.Content!.ReadAsStringAsync(cancellationToken);
+        Check(form.Contains("grant_type=refresh_token", StringComparison.Ordinal)
+            && form.Contains("refresh_token=old-refresh", StringComparison.Ordinal)
+            && form.Contains("client_id=synthetic-client-id", StringComparison.Ordinal)
+            && !form.Contains("client_secret", StringComparison.Ordinal),
+            "OAuth refresh uses the device-flow grant without a client secret");
+        return JsonResponse("""{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":28800,"refresh_token_expires_in":15897600,"scope":"public_repo","token_type":"bearer"}""");
+    })))
+    {
+        var flow = new GitHubDeviceFlowClient(refreshHttp);
+        var refreshed = await flow.RefreshAsync("synthetic-client-id", "old-refresh");
+        var now = new DateTimeOffset(2026, 11, 16, 12, 0, 0, TimeSpan.Zero);
+        var stored = refreshed.ToStoredCredential(now);
+        var restored = GitHubStoredCredential.Parse(stored.Serialize());
+        Check(restored?.AccessToken == "rotated-access" && restored.RefreshToken == "rotated-refresh"
+            && restored.AccessTokenExpiresAtUtc == now.AddSeconds(28800)
+            && restored.RefreshTokenExpiresAtUtc == now.AddSeconds(15897600),
+            "GitHub token expiry and rotated refresh credentials survive secure-store serialization");
+        Check(stored.NeedsRefresh(now.AddSeconds(28700)), "GitHub credential refresh begins shortly before access-token expiry");
+        Check(GitHubStoredCredential.Parse("legacy-access-token")?.AccessToken == "legacy-access-token",
+            "legacy access-token-only Credential Manager entries remain readable");
+    }
+
+    var tokenExpiredHandled = false;
+    using (var expiredHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(JsonResponse("""{"error":"token_expired"}""")))))
+    {
+        var flow = new GitHubDeviceFlowClient(expiredHttp, (_, _) => Task.CompletedTask);
+        try
+        {
+            await flow.PollForTokenAsync("synthetic-client-id",
+                new GitHubDeviceSession("expired-device", "ABCD-EFGH", new Uri("https://github.com/login/device"), 60, 1));
+        }
+        catch (GitHubAuthorizationException exception)
+        {
+            tokenExpiredHandled = exception.Message.Contains("expired", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+    Check(tokenExpiredHandled, "GitHub device flow handles the documented token_expired response");
+
+    using (var accountHttp = new HttpClient(new TestHttpHandler((_, _) =>
+    {
+        var response = JsonResponse("""{"login":"pozpo","name":"Test Account","avatar_url":null}""");
+        response.Headers.Add("X-OAuth-Scopes", "public_repo");
+        return Task.FromResult(response);
+    })))
+    {
+        var account = await new GitHubAchievementSyncClient(accountHttp).GetCurrentUserAsync("synthetic-token");
+        Check(account.Login == "pozpo" && account.HasPublicRepositoryAccess,
+            "GitHub account identity and granted public_repo scope are read from the authenticated response");
+        var insufficientScopes = new GitHubAccount("pozpo", null, null, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        Check(!insufficientScopes.HasPublicRepositoryAccess,
+            "GitHub sign-in cannot proceed without the required public_repo grant");
+    }
+
+    var unauthorizedMapped = false;
+    using (var unauthorizedHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)))))
+    {
+        try { _ = await new GitHubAchievementSyncClient(unauthorizedHttp).GetCurrentUserAsync("revoked-token"); }
+        catch (GitHubAuthorizationException) { unauthorizedMapped = true; }
+    }
+    Check(unauthorizedMapped, "GitHub revoked-token responses require a fresh sign-in");
+
+    using (var badRefreshHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(JsonResponse("""{"error":"bad_refresh_token"}""")))))
+    {
+        var refreshRejected = false;
+        try { _ = await new GitHubDeviceFlowClient(badRefreshHttp).RefreshAsync("synthetic-client-id", "expired-refresh"); }
+        catch (GitHubAuthorizationException exception)
+        {
+            refreshRejected = exception.Message.Contains("expired or was revoked", StringComparison.OrdinalIgnoreCase);
+        }
+        Check(refreshRejected, "GitHub expired or revoked refresh tokens require a fresh device sign-in");
     }
 
     var remoteAchievementJson = """

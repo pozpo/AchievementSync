@@ -5,7 +5,7 @@ Updated: 2026-11-16
 ## Current state
 
 - This is the existing AchievementSync project in `C:\AchievementSync`; no second app or versioned output was created.
-- The source remote is `https://github.com/pozpo/AchievementSync.git`. The original remote README and MIT license history were merged without force, and local `main` was pushed and verified at `c2ca177f0f34c0d7aba3b2385c69b4b23c82b445`. This session adds the tested synthetic verification harness and its documentation to the same `main` branch.
+- The source remote is `https://github.com/pozpo/AchievementSync.git`. The original remote README and MIT license history were merged without force. The tested synthetic verification harness and its documentation were pushed non-forced to the same `main` branch in commit `7cf47d1c725a84c0609e5ce9c9a59d57e2bea9ee`; GitHub's branch ref was checked against that commit.
 - The viewer data repository is separate. Public GitHub confirms `pozpo/achievement-viewer` is owned by `pozpo`, is a fork, and has a writable `user` branch. The local `achievement-viewer/` folder has invalid Git metadata and remains ignored and untouched.
 - The existing executable remains at `C:\AchievementSync\output\AchievementSync.exe`; its application identity, icon, and stable `0.1.2.0` file version were preserved. The previous verified Release publish embedded the supplied public OAuth Client ID. This session changed only the smoke-test project and documentation, so the executable was not republished.
 - Local app settings point to `pozpo/achievement-viewer`, branch `user`; automatic sync is off and first-upload authorization is false. Windows Credential Manager currently has no `AchievementSync/GitHub/OAuthToken` credential.

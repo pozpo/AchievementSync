@@ -1,6 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
-    [string]$Version = "0.1.1"
+    [string]$Version = "0.1.2",
+    [string]$GitHubOAuthClientId = $env:ACHIEVEMENTSYNC_GITHUB_CLIENT_ID
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +20,7 @@ dotnet publish $projectPath `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `
     -p:Version=$Version `
+    -p:AchievementSyncGitHubClientId=$GitHubOAuthClientId `
     -p:AssemblyVersion=${Version}.0 `
     -p:FileVersion=${Version}.0 `
     -p:InformationalVersion=$Version-preview `

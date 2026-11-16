@@ -2,7 +2,9 @@
 
 ## Resume point
 
-The last completed work in this session added parsing for the viewer's `game-info.json`, a local `AppID/<appid>/achievements.json` preview, visible recent unlocks, and a tested self-contained x64 Windows build. The preview does not upload or write data. The next implementation task is GitHub device-flow sign-in, then selecting a user's fork and implementing a remote merge/preview/explicit-confirmation workflow. A publisher-owned GitHub OAuth App must be registered with Device Flow enabled and its public Client ID supplied before the built-in login can be enabled. GitHub's device flow uses the registered Client ID and avoids a distributed Client Secret; see [GitHub's OAuth authorization guide](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps) and [OAuth app setup](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app).
+This continuation added the supplied logo as a multi-size Windows `.ico`, plus GitHub Device Flow, Windows Credential Manager storage, remote preview/merge, and guarded push. Remote behavior is tested against synthetic HTTP responses; no real account or repository was accessed. A publisher-owned GitHub OAuth App still must be registered with Device Flow enabled and its public Client ID supplied to a release build before sign-in is available. GitHub's device flow uses the registered Client ID and avoids a distributed Client Secret; see [GitHub's OAuth authorization guide](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps) and [OAuth app setup](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app).
+
+**Next task:** configure the publisher OAuth App Client ID in a release build and complete live sign-in/repository verification with a dedicated test fork. Then add durable sync history, optional interval scheduling, and an installer. Do not use the supplied local viewer data for sync testing.
 
 At the start of this recovery the workspace root had no `.git` history. A curated local `main` repository is now initialized with baseline commit `dfb2a01`; the working tree was clean after that commit and no remote is configured. The nested `achievement-viewer\.git` metadata did not resolve as a repository in Git commands. The original PowerShell script and viewer data remain separate workspace inputs and are excluded from the public app source.
 
@@ -17,14 +19,15 @@ AchievementSync uses .NET 10 with WPF. It is a Windows-only desktop app, so WPF 
 3. Parsers normalize data into achievement records. Catalog metadata and player progress are separate facts; an absent state remains unknown. The legacy viewer's `game-info.json` catalog can be joined to `achievements.json` progress.
 4. The merger groups by numeric AppID and unions achievement keys. A true unlock from any valid source is retained; the newest valid unlock timestamp wins.
 5. Public Steam Store metadata is fetched separately using the AppID and cached in the user's local app-data folder. Steam metadata does not supply local unlock state.
-6. No synchronization component is currently connected to the UI. Scanning and metadata lookup do not upload achievement data.
+6. GitHub sync uses Device Flow and stores tokens in Windows Credential Manager. The user selects a public repository owned by the connected account and a branch. The app reads matching AppID achievement JSON, unions local and remote states, shows exact proposed content, then requires separate confirmation before a non-forced GitHub Git Data API commit. Invalid remote JSON or a changed branch stops the push.
 
 ## Privacy and safety boundaries
 
 - Local profile files are read only.
 - AppID is the only local profile data sent to Steam for the current name/art lookup.
 - Steam artwork is accepted only from HTTPS Steam-hosted CDN domains and cached locally.
-- No GitHub credential is built into the app. The legacy script is not used by the GUI.
+- No GitHub credential or OAuth Client Secret is built into the app. A publisher may supply the public Client ID at release build time. Access tokens are stored in Windows Credential Manager, not settings or logs.
+- GitHub uploads are opt-in, restricted to a user's public repository and `AppID/<numeric id>/achievements.json`, and require a preview plus explicit confirmation. Achievement IDs, earned states, and available unlock times are sent.
 - Existing achievement files are not deleted or overwritten.
 
 ## Current support limits
@@ -43,9 +46,9 @@ AchievementSync uses .NET 10 with WPF. It is a Windows-only desktop app, so WPF 
 | 2. Desktop foundation | Complete for preview | Dark dashboard, recent unlocks, location settings, recursive read-only scan, custom folders, manual scan, details window, and logs are implemented. |
 | 3. Achievement processing | Initial adapters complete | JSON progress, viewer `.db`, `game-info.json` catalogs, metadata catalog arrays, and partial INI profiles are normalized and merged. System-specific fixtures are still needed before claiming full support for every listed source. |
 | 4. Metadata and artwork | Initial integration complete | Steam Store name/header image lookup, local cache, fallback, manual display-name override, and achievement icon display are implemented. Offline cache and CDN behavior depend on network and filesystem access. |
-| 5. GitHub synchronization | Local preview implemented; remote sync not started | Activity builds and displays viewer-compatible JSON files locally, excluding unknown unlock states. A public OAuth application Client ID must be registered by the publisher before implementing account/repository selection, remote union, explicit confirmation, content-only writes, retry/history, and token protection. No upload is possible in this preview. |
-| 6. Public release | Preview executable verified | Source documentation, privacy-safe screenshot, MIT license, and a Windows publish script are present. A self-contained x64 single-file executable builds and launches. It is not an installer; release signing, installer packaging, and OAuth-backed sync remain. |
+| 5. GitHub synchronization | Manual and opt-in after-scan sync implemented; external setup and workflow remain | Device Flow, secure token storage, account-owned public repository/branch configuration, remote merge preview, path-restricted Git Data API commit, explicit first-upload confirmation, opt-in after-scan pushes, and stale-branch rejection are implemented. Synthetic checks cover polling, merge, preview, push, and stale previews. The publisher OAuth Client ID is not yet supplied; private repos, local checkout mirroring, interval scheduling, and durable history remain. |
+| 6. Public release | 0.1.2 portable executable verified | MIT source license, privacy-safe screenshot, documentation, supplied logo, and self-contained x64 publish script are present. The executable builds and launches with an embedded multi-size icon. This is not an installer. Public OAuth registration/client ID, signed release, installer, and live end-to-end verification remain. |
 
 ## Before enabling GitHub sync
 
-The app must connect to a user's own fork, read the target branch before proposing writes, union local known states with remote achievement JSON, and show the exact paths and JSON changes before any commit. It must use a least-privilege authorization flow, protect tokens with Windows credential storage, and never stage or reset unrelated repository files. Auto-sync must remain opt-in. The GitHub app registration and exact content scope are external release inputs; until then, upload code stays disabled.
+The app connects to an account-owned public repository through the GitHub API, reads a fixed base commit, unions local known states with remote achievement JSON, and shows exact paths and JSON changes before a commit. It requests `public_repo`, protects tokens with Windows Credential Manager, and never stages, resets, or deletes unrelated files. Manual and first-time automatic pushes require confirmation; users can explicitly opt into later pushes after each scan. The publisher's OAuth App registration and public Client ID remain external release inputs, so sign-in is disabled in builds without that ID.

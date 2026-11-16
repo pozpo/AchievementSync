@@ -71,7 +71,7 @@ public sealed class SteamMetadataCache
     private static HttpClient CreateClient()
     {
         var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("AchievementSync/0.1.1 (+desktop game metadata lookup)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("AchievementSync/0.1.2 (+desktop game metadata lookup)");
         return client;
     }
 

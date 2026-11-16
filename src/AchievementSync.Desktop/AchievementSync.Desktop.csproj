@@ -2,18 +2,28 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AchievementSync.Core\AchievementSync.Core.csproj" />
+    <Resource Include="Assets\AchievementSync.ico" />
   </ItemGroup>
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <Version>0.1.1</Version>
-    <AssemblyVersion>0.1.1.0</AssemblyVersion>
-    <FileVersion>0.1.1.0</FileVersion>
-    <InformationalVersion>0.1.1-preview</InformationalVersion>
+    <Version>0.1.2</Version>
+    <AssemblyVersion>0.1.2.0</AssemblyVersion>
+    <FileVersion>0.1.2.0</FileVersion>
+    <InformationalVersion>0.1.2-preview</InformationalVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\AchievementSync.ico</ApplicationIcon>
+    <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">$(ACHIEVEMENTSYNC_GITHUB_CLIENT_ID)</AchievementSyncGitHubClientId>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(AchievementSyncGitHubClientId)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AchievementSync.GitHubOAuthClientId</_Parameter1>
+      <_Parameter2>$(AchievementSyncGitHubClientId)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
 
 </Project>

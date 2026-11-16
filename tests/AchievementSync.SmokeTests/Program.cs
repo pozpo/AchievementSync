@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
+using System.Net;
 using AchievementSync.Core.Metadata;
 using AchievementSync.Core.Parsing;
 using AchievementSync.Core.Scanning;
 using AchievementSync.Core.Synchronization;
+using AchievementSync.Core.Settings;
 
 var tempRoot = Path.Combine(Path.GetTempPath(), "AchievementSync-smoke-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(tempRoot);
@@ -93,6 +95,125 @@ try
             "viewer export preview does not invent a state for catalog-only entries");
     }
 
+    var mergedViewerJson = AchievementJsonMerge.Merge("""
+        {"ACH_KEEP":{"earned":false,"earned_time":0},"ACH_NEW":{"earned":true,"earned_time":1700000100}}
+        """, """
+        {"ACH_KEEP":{"earned":true,"earned_time":1700000000},"ACH_REMOTE":{"earned":true,"earned_time":1700000200}}
+        """);
+    using (var mergedJson = System.Text.Json.JsonDocument.Parse(mergedViewerJson))
+    {
+        Check(mergedJson.RootElement.EnumerateObject().Count() == 3, "sync merge unions remote and local achievement identifiers");
+        Check(mergedJson.RootElement.GetProperty("ACH_KEEP").GetProperty("earned").GetBoolean()
+            && mergedJson.RootElement.GetProperty("ACH_KEEP").GetProperty("earned_time").GetInt64() == 1700000000,
+            "sync merge preserves a confirmed remote unlock over a local locked state");
+        Check(AchievementJsonMerge.CountNewUnlocks("""
+            {"ACH_KEEP":{"earned":true,"earned_time":1700000000},"ACH_REMOTE":{"earned":true,"earned_time":1700000200}}
+            """, mergedViewerJson) == 1, "sync merge counts only newly earned achievements");
+    }
+    var invalidRemoteRejected = false;
+    try { _ = AchievementJsonMerge.Merge("{}", "not json"); }
+    catch (InvalidDataException) { invalidRemoteRejected = true; }
+    Check(invalidRemoteRejected, "invalid remote JSON stops the sync preview safely");
+    var blankRemoteRejected = false;
+    try { _ = AchievementJsonMerge.Merge("{}", " "); }
+    catch (InvalidDataException) { blankRemoteRejected = true; }
+    Check(blankRemoteRejected, "blank remote achievement files are not treated as missing files");
+    var newSettings = new AppSettings();
+    Check(!newSettings.AutoSyncAfterScan && newSettings.GitHubBranch == "user",
+        "automatic uploads are opt-in and the compatible viewer branch is the default");
+
+    var devicePoll = 0;
+    var requestedIntervals = new List<int>();
+    using (var oauthHttp = new HttpClient(new TestHttpHandler(async (request, cancellationToken) =>
+    {
+        if (request.RequestUri!.AbsolutePath.EndsWith("/device/code", StringComparison.Ordinal))
+        {
+            var form = await request.Content!.ReadAsStringAsync(cancellationToken);
+            if (!form.Contains("scope=public_repo", StringComparison.Ordinal)) throw new InvalidOperationException("Expected public_repo scope.");
+            return JsonResponse("""{"device_code":"synthetic-device-code","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","expires_in":600,"interval":2}""");
+        }
+
+        devicePoll++;
+        return devicePoll switch
+        {
+            1 => JsonResponse("""{"error":"authorization_pending"}"""),
+            2 => JsonResponse("""{"error":"slow_down"}"""),
+            _ => JsonResponse("""{"access_token":"synthetic-token","token_type":"bearer","scope":"public_repo"}""")
+        };
+    })))
+    {
+        var deviceFlow = new GitHubDeviceFlowClient(oauthHttp, (delay, _) =>
+        {
+            requestedIntervals.Add((int)delay.TotalSeconds);
+            return Task.CompletedTask;
+        });
+        var session = await deviceFlow.StartAsync("synthetic-client-id");
+        var token = await deviceFlow.PollForTokenAsync("synthetic-client-id", session);
+        Check(session.UserCode == "ABCD-EFGH" && token.AccessToken == "synthetic-token", "GitHub device flow parses a synthetic authorization session");
+        Check(requestedIntervals.SequenceEqual([2, 2, 7]), "GitHub device flow honors polling interval and slow_down response");
+    }
+
+    var remoteAchievementJson = """
+        {"ACH_KEEP":{"earned":true,"earned_time":1700000000},"ACH_REMOTE":{"earned":true,"earned_time":1700000200}}
+        """;
+    var remoteHead = "commit-old";
+    var githubPushCalls = 0;
+    using (var githubHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (request.Method == HttpMethod.Get && path == "/repos/pozpo/viewer")
+            return Task.FromResult(JsonResponse("""{"full_name":"pozpo/viewer","default_branch":"user","private":false,"permissions":{"push":true}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/ref/heads/user", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse($"{{\"object\":{{\"sha\":\"{remoteHead}\"}}}}"));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/commits/commit-old", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree-old"}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(remoteAchievementJson)) + "\"}"));
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/blobs", StringComparison.Ordinal))
+        {
+            githubPushCalls++;
+            return Task.FromResult(JsonResponse("""{"sha":"blob-new"}"""));
+        }
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/trees", StringComparison.Ordinal))
+        {
+            githubPushCalls++;
+            return Task.FromResult(JsonResponse("""{"sha":"tree-new"}"""));
+        }
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/commits", StringComparison.Ordinal))
+        {
+            githubPushCalls++;
+            return Task.FromResult(JsonResponse("""{"sha":"commit-new"}"""));
+        }
+        if (request.Method.Method == "PATCH" && path.EndsWith("/git/refs/heads/user", StringComparison.Ordinal))
+        {
+            githubPushCalls++;
+            remoteHead = "commit-new";
+            return Task.FromResult(JsonResponse("""{"object":{"sha":"commit-new"}}"""));
+        }
+        throw new InvalidOperationException($"Unexpected synthetic GitHub request: {request.Method} {path}");
+    })))
+    {
+        var github = new GitHubAchievementSyncClient(githubHttp);
+        var target = new GitHubSyncTarget("pozpo", "viewer", "user");
+        var localFile = new AchievementExportFile("AppID/730/achievements.json", "730", 2, """
+            {"ACH_KEEP":{"earned":false,"earned_time":0},"ACH_NEW":{"earned":true,"earned_time":1700000100}}
+            """);
+        var preview = await github.BuildPreviewAsync("synthetic-token", target, [localFile]);
+        Check(preview.Changes.Count == 1 && preview.Changes[0].NewUnlockCount == 1,
+            "GitHub preview merges local state with the remote file and proposes only changed AppID JSON");
+        Check(preview.Changes[0].RelativePath == "AppID/730/achievements.json"
+            && preview.Changes[0].ProposedJson.Contains("ACH_REMOTE", StringComparison.Ordinal),
+            "GitHub preview preserves remote-only achievements and restricts output paths");
+        var push = await github.PushAsync("synthetic-token", preview);
+        Check(push.Pushed && push.UpdatedFiles == 1 && githubPushCalls == 4,
+            "GitHub API push creates one content-only commit from a reviewed preview");
+        var concurrentWriteStopped = false;
+        try { _ = await github.PushAsync("synthetic-token", preview); }
+        catch (GitHubConcurrentUpdateException) { concurrentWriteStopped = true; }
+        Check(concurrentWriteStopped && githubPushCalls == 4,
+            "GitHub push refuses a stale preview before creating commit data");
+    }
+
     var storeMetadata = SteamStoreMetadataParser.Parse("570940", """
         {"570940":{"success":true,"data":{"name":"DARK SOULS: REMASTERED","header_image":"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/570940/header.jpg"}}}
         """);
@@ -152,4 +273,15 @@ void Check(bool condition, string description)
     if (!condition) throw new InvalidOperationException("FAIL: " + description);
     checks++;
     Console.WriteLine("PASS: " + description);
+}
+
+HttpResponseMessage JsonResponse(string content) => new(HttpStatusCode.OK)
+{
+    Content = new StringContent(content, System.Text.Encoding.UTF8, "application/json")
+};
+
+sealed class TestHttpHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        send(request, cancellationToken);
 }

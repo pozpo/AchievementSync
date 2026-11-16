@@ -9,6 +9,7 @@ using AchievementSync.Core.Synchronization;
 internal static class GitHubLiveSyncVerification
 {
     private const string SyntheticAchievementName = "ACHIEVEMENTSYNC_SYNTHETIC_TEST";
+    private const string SyntheticAppId = "9999999998";
     private const string CredentialTarget = "AchievementSync/GitHub/OAuthToken";
     private static readonly Uri ApiBase = new("https://api.github.com/");
 
@@ -86,8 +87,16 @@ internal static class GitHubLiveSyncVerification
 
             target = new GitHubSyncTarget(settings.GitHubOwner, settings.GitHubRepository, settings.GitHubBranch);
             syntheticAppId = await FindWebsiteIndexedAppIdAsync(http, accessToken, target, repository.DefaultBranch);
+            var appIdIsIndexedByViewer = syntheticAppId is not null;
+            if (syntheticAppId is null)
+            {
+                syntheticAppId = SyntheticAppId;
+                await EnsureFileAbsentAsync(http, accessToken, target.Owner, target.Repository, repository.DefaultBranch, syntheticAppId);
+                await EnsureFileAbsentAsync(http, accessToken, target.Owner, target.Repository, target.Branch, syntheticAppId);
+                Console.WriteLine($"No free indexed AppID path exists; using reserved synthetic fixture ID {SyntheticAppId}. The viewer's user-branch data endpoint will be checked, but this temporary test will not be listed as a game on the site.");
+            }
 
-            var fixturePath = Path.Combine(root, "tests", "Fixtures", "GitHubSynthetic", "AppID", "9999999999", "achievements.json");
+            var fixturePath = Path.Combine(root, "tests", "Fixtures", "GitHubSynthetic", "AppID", SyntheticAppId, "achievements.json");
             fixtureJson = await File.ReadAllTextAsync(fixturePath);
             using (var fixture = JsonDocument.Parse(fixtureJson))
             {
@@ -122,25 +131,19 @@ internal static class GitHubLiveSyncVerification
                     || OptionalString(files[0], "filename") != path)
                     throw new InvalidOperationException("The verified GitHub commit contains unexpected paths.");
             }
+            Console.WriteLine($"Verified single-path upload commit: {result.CommitUrl}");
 
             var remote = await ReadRemoteFileAsync(http, accessToken, target, syntheticAppId);
             if (remote is null || !AchievementJsonMerge.SemanticallyEqual(remote.Value.Json, fixtureJson))
                 throw new InvalidOperationException("The uploaded synthetic JSON did not match its reviewed content.");
 
-            var websiteUrl = $"https://raw.githubusercontent.com/{Escape(target.Owner)}/{Escape(target.Repository)}/{Escape(target.Branch)}/{path}?t={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
-            using (var websiteResponse = await http.GetAsync(websiteUrl))
-            {
-                if (!websiteResponse.IsSuccessStatusCode)
-                    throw new InvalidOperationException("The viewer website's raw user-branch path could not read the uploaded test JSON.");
-                var websiteJson = await websiteResponse.Content.ReadAsStringAsync();
-                if (!AchievementJsonMerge.SemanticallyEqual(websiteJson, fixtureJson))
-                    throw new InvalidOperationException("The viewer website's raw path returned different test JSON.");
-            }
+            var websiteJson = await ReadViewerRawFileWithRetryAsync(http, target, path);
+            if (!AchievementJsonMerge.SemanticallyEqual(websiteJson, fixtureJson))
+                throw new InvalidOperationException("The viewer website's raw path returned different test JSON.");
 
             Console.WriteLine($"Authenticated account: {account.Login} (public_repo granted).");
-            Console.WriteLine($"Verified target: {repository.FullName} branch {target.Branch}; website-indexed synthetic AppID {syntheticAppId}.");
-            Console.WriteLine($"Verified single-path upload commit: {result.CommitUrl}");
-            Console.WriteLine("The viewer website's raw user-branch path returned the reviewed synthetic JSON.");
+            Console.WriteLine($"Verified target: {repository.FullName} branch {target.Branch}; synthetic AppID {syntheticAppId}{(appIdIsIndexedByViewer ? " (already indexed by the viewer)" : " (reserved fixture ID)")}.");
+            Console.WriteLine("The viewer website's raw user-branch data endpoint returned the reviewed synthetic JSON.");
 
             await RemoveSyntheticFileAsync(http, accessToken, target, syntheticAppId, fixtureJson);
             Console.WriteLine("Removed only the verified synthetic file after the GitHub and website readback checks.");
@@ -169,7 +172,7 @@ internal static class GitHubLiveSyncVerification
         }
     }
 
-    private static async Task<string> FindWebsiteIndexedAppIdAsync(
+    private static async Task<string?> FindWebsiteIndexedAppIdAsync(
         HttpClient http,
         string token,
         GitHubSyncTarget target,
@@ -187,17 +190,54 @@ internal static class GitHubLiveSyncVerification
                 var appId = OptionalString(item, "name");
                 if (string.IsNullOrEmpty(appId) || !appId.All(char.IsAsciiDigit)) continue;
 
-                var rawUrl = $"https://raw.githubusercontent.com/{Escape(target.Owner)}/{Escape(target.Repository)}/{Escape(target.Branch)}/AppID/{appId}/achievements.json";
-                using var request = new HttpRequestMessage(HttpMethod.Head, rawUrl);
-                using var response = await http.SendAsync(request);
-                if (response.StatusCode == HttpStatusCode.NotFound) return appId;
-                if (response.IsSuccessStatusCode) continue;
-                throw new HttpRequestException($"Could not preflight the candidate AppID path (HTTP {(int)response.StatusCode}).");
+                var candidateDirectory = $"repos/{Escape(target.Owner)}/{Escape(target.Repository)}/contents/AppID/{appId}?ref={Uri.EscapeDataString(target.Branch)}";
+                using var candidateResponse = await SendApiAsync(http, token, HttpMethod.Get, candidateDirectory);
+                if (candidateResponse.StatusCode == HttpStatusCode.NotFound) return appId;
+                using var candidate = await ReadApiJsonAsync(candidateResponse);
+                if (candidate.RootElement.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException($"GitHub returned unexpected metadata for AppID/{appId}.");
+                var hasAchievementsFile = candidate.RootElement.EnumerateArray()
+                    .Any(entry => OptionalString(entry, "name") == "achievements.json");
+                if (!hasAchievementsFile) return appId;
             }
             if (items.Length < 100) break;
         }
 
-        throw new InvalidOperationException("No existing website-indexed AppID directory with an absent user-branch achievements.json was found. No upload was made.");
+        return null;
+    }
+
+    private static async Task EnsureFileAbsentAsync(HttpClient http, string token, string owner, string repository, string branch, string appId)
+    {
+        var relative = $"repos/{Escape(owner)}/{Escape(repository)}/contents/AppID/{appId}?ref={Uri.EscapeDataString(branch)}";
+        using var response = await SendApiAsync(http, token, HttpMethod.Get, relative);
+        if (response.StatusCode == HttpStatusCode.NotFound) return;
+        using var json = await ReadApiJsonAsync(response);
+        if (json.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException($"Synthetic AppID path is not an absent-or-directory path on branch '{branch}'. No upload was made.");
+        if (json.RootElement.GetArrayLength() != 0)
+            throw new InvalidOperationException($"Synthetic AppID directory is not empty on branch '{branch}'. No upload was made.");
+    }
+
+    private static async Task<string> ReadViewerRawFileWithRetryAsync(HttpClient http, GitHubSyncTarget target, string path)
+    {
+        int[] delaysMilliseconds = [0, 1000, 2000, 4000, 8000, 12000];
+        HttpStatusCode? lastStatus = null;
+        for (var attempt = 0; attempt < delaysMilliseconds.Length; attempt++)
+        {
+            if (delaysMilliseconds[attempt] > 0)
+                await Task.Delay(delaysMilliseconds[attempt]);
+            var cacheBuster = Guid.NewGuid().ToString("N");
+            var url = $"https://raw.githubusercontent.com/{Escape(target.Owner)}/{Escape(target.Repository)}/{Escape(target.Branch)}/{path}?verify={cacheBuster}";
+            using var response = await http.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+                return await response.Content.ReadAsStringAsync();
+
+            lastStatus = response.StatusCode;
+            if (response.StatusCode is not (HttpStatusCode.NotFound or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout or (HttpStatusCode)429))
+                throw new HttpRequestException($"The viewer raw data endpoint returned HTTP {(int)response.StatusCode}.");
+        }
+
+        throw new HttpRequestException($"The viewer raw user-branch path remained unavailable after retries (HTTP {(int?)lastStatus}).");
     }
 
     private static async Task<(string Json, string BlobSha)?> ReadRemoteFileAsync(

@@ -340,6 +340,13 @@ try
     [new ScanLocation("bad", "Bad", Path.Combine(tempRoot, "bad"), true, true, true)]);
     Check(corruptScan.Games.Count == 0 && corruptScan.Issues.Count > 0, "corrupt profiles are skipped with a diagnostic");
 
+    if (args.Contains("--live-github-sync", StringComparer.OrdinalIgnoreCase))
+    {
+        if (!args.Contains("--confirm-synthetic-upload", StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Live sync is disabled unless --confirm-synthetic-upload is also supplied.");
+        return await GitHubLiveSyncVerification.RunAsync();
+    }
+
     Console.WriteLine($"PASS: {checks} functional checks completed.");
     return 0;
 }

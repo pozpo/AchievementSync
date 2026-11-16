@@ -45,6 +45,14 @@ dotnet build AchievementSync.sln --configuration Release -m:1
 ./scripts/verify-credential-store.ps1
 ```
 
+After signing into AchievementSync and connecting the owned public viewer fork on branch `user`, the following explicitly opted-in check uploads one labelled synthetic achievement JSON, verifies the GitHub commit and viewer raw-file readback, then removes only that synthetic file:
+
+```powershell
+dotnet run --project tests/AchievementSync.SmokeTests/AchievementSync.SmokeTests.csproj --configuration Release --no-build -- --live-github-sync --confirm-synthetic-upload
+```
+
+This live check is not part of ordinary builds or scans. It requires an existing app Device Flow credential, `public_repo` permission, and a writable repository configured in app settings. It refuses automatic sync, a mismatched owner, a non-public or non-writable repository, an unexpected branch, an existing test file, or a commit that contains any path beyond the one synthetic `AppID/<numeric id>/achievements.json` file. If verification fails after upload, it attempts cleanup only while the remote file still matches the exact synthetic fixture. The check has not yet completed because this Windows account has not signed into AchievementSync.
+
 Create the self-contained executable after the build and functional checks pass:
 
 ```powershell

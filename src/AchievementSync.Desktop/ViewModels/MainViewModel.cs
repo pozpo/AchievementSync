@@ -28,7 +28,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly SteamMetadataCache _metadataCache;
     private readonly SemaphoreSlim _metadataSlots = new(5, 5);
     private readonly SemaphoreSlim _viewerDataSlots = new(4, 4);
-    private readonly HttpClient _viewerCatalogHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly HttpClient _viewerCatalogHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly ViewerGameInfoClient _viewerGameInfoClient;
     private readonly ViewerAchievementProgressClient _viewerProgressClient;
     private readonly SettingsStore _settingsStore = new();
@@ -622,11 +622,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 var knownSources = _sourceFiles.Where(item => string.Equals(item.AppId, appId, StringComparison.Ordinal)).ToArray();
                 IReadOnlyList<GameProfile> parsed = [];
-                for (var attempt = 0; attempt < 4; attempt++)
+                for (var attempt = 0; attempt < 3; attempt++)
                 {
                     parsed = await _scanner.ParseKnownSourcesAsync(knownSources).ConfigureAwait(false);
                     if (parsed.Count > 0) break;
-                    if (attempt < 3) await Task.Delay(TimeSpan.FromMilliseconds(350 * (attempt + 1))).ConfigureAwait(false);
+                    if (attempt < 3) await Task.Delay(TimeSpan.FromMilliseconds(150 * (attempt + 1))).ConfigureAwait(false);
                 }
 
                 var localProfile = parsed.FirstOrDefault(item => string.Equals(item.AppId, appId, StringComparison.Ordinal));
@@ -690,6 +690,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _sourceFiles = result.SourceFiles;
             WatchSourcesChanged?.Invoke(this, _sourceFiles);
             Games.Clear();
+            var gamesToLoadMetadata = new List<GameCardViewModel>();
+            var gamesToLoadViewerData = new List<GameCardViewModel>();
             foreach (var game in result.Games)
             {
                 var card = new GameCardViewModel(game);
@@ -698,9 +700,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     card.ApplyManualTitle(manualName);
                 }
                 Games.Add(card);
-                _ = LoadMetadataAsync(card);
-                if (!game.CompletionPercent.HasValue) _ = LoadViewerDataAsync(card);
+                gamesToLoadMetadata.Add(card);
+                if (!game.CompletionPercent.HasValue) gamesToLoadViewerData.Add(card);
             }
+            // Load public metadata/viewer data per game, but only refresh the UI once
+            // after each batch settles instead of per-game.
+            _ = Task.Run(async () =>
+            {
+                foreach (var card in gamesToLoadMetadata) await LoadMetadataAsync(card);
+                foreach (var card in gamesToLoadViewerData) await LoadViewerDataAsync(card);
+                await Application.Current!.Dispatcher.InvokeAsync(() =>
+                {
+                    RefreshGamesView();
+                    UpdateLibrarySummary();
+                }, System.Windows.Threading.DispatcherPriority.Background);
+            });
             var newUnlockNotifications = _unlockTracker.ObserveMany(Games.Select(game => (game.Profile, (string?)game.Title))).ToList();
             foreach (var notification in newUnlockNotifications)
             {
@@ -1582,8 +1596,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 game.ApplyMetadata(metadata);
-                RefreshGamesView();
-                UpdateLibrarySummary();
             });
         }
         catch (Exception exception)
@@ -1637,8 +1649,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (game.Profile.HasCompleteCatalog || progressResult.Success)
             {
-                UpdateLibrarySummary();
-                RefreshGamesView();
+                // UI refresh is handled by the scan batcher after all per-game loads finish.
             }
         }
         catch (Exception exception)

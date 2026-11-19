@@ -18,6 +18,14 @@ public sealed class AchievementScanner
         new JsonAchievementParser(),
         new IniAchievementParser()
     ];
+    private readonly string _generatedMetadataRoot;
+
+    public AchievementScanner(string? generatedMetadataRoot = null)
+    {
+        _generatedMetadataRoot = Path.GetFullPath(generatedMetadataRoot ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "AchievementSync", "metadata"));
+    }
 
     public Task<ScanResult> ScanAsync(
         IReadOnlyList<ScanLocation> locations,
@@ -27,8 +35,10 @@ public sealed class AchievementScanner
     private ScanResult Scan(IReadOnlyList<ScanLocation> locations, CancellationToken cancellationToken)
     {
         var profiles = new List<ParsedProfile>();
+        var sourceFiles = new List<DiscoveredAchievementFile>();
         var issues = new List<string>();
         var updatedLocations = new List<ScanLocation>();
+        var visitedSourceFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidateFiles = 0;
 
         foreach (var location in locations)
@@ -49,11 +59,20 @@ public sealed class AchievementScanner
             var found = new List<string>();
             var locationIssues = new List<string>();
             EnumerateCandidates(location.Path, found, locationIssues, cancellationToken);
-            candidateFiles += found.Count;
 
             foreach (var file in found)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                string normalizedPath;
+                try { normalizedPath = Path.GetFullPath(file); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException)
+                {
+                    issues.Add($"Skipped {Path.GetFileName(file)}: its path could not be normalized.");
+                    continue;
+                }
+                if (!visitedSourceFiles.Add(normalizedPath)) continue;
+                candidateFiles++;
+
                 var appId = FindAppId(location.Path, file);
                 if (appId is null)
                 {
@@ -64,9 +83,33 @@ public sealed class AchievementScanner
                 var parser = _parsers.FirstOrDefault(item => item.SupportsFile(file));
                 if (parser is null) continue;
                 var result = parser.Parse(file, appId);
+                DateTime lastWriteTimeUtc;
+                try
+                {
+                    lastWriteTimeUtc = File.GetLastWriteTimeUtc(file);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+                {
+                    issues.Add($"Skipped {Path.GetFileName(file)}: its modification time could not be read.");
+                    continue;
+                }
+
+                sourceFiles.Add(new DiscoveredAchievementFile(
+                    appId,
+                    file,
+                    Path.GetFileName(file),
+                    Path.GetExtension(file),
+                    lastWriteTimeUtc,
+                    result.Profile is not null,
+                    location.Id));
                 if (result.Profile is not null)
                 {
-                    profiles.Add(result.Profile);
+                    var profile = result.Profile;
+                    if (IsUnlockListSource(location.Id, file))
+                    {
+                        profile = profile with { UnlistedAchievementsAreLocked = true };
+                    }
+                    profiles.Add(profile);
                 }
                 else if (result.Error is not null && !result.Error.Contains("does not contain recognizable", StringComparison.OrdinalIgnoreCase))
                 {
@@ -88,10 +131,35 @@ public sealed class AchievementScanner
             ProfileMerger.Merge(profiles),
             updatedLocations,
             issues,
-            candidateFiles);
+            candidateFiles,
+            sourceFiles);
     }
 
-    private static void EnumerateCandidates(
+    /// <summary>Parses only the source files already discovered during a library scan.</summary>
+    public Task<IReadOnlyList<GameProfile>> ParseKnownSourcesAsync(
+        IReadOnlyList<DiscoveredAchievementFile> sources,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            var profiles = new List<ParsedProfile>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var source in sources)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!visited.Add(Path.GetFullPath(source.Path)) || !File.Exists(source.Path)) continue;
+                var parser = _parsers.FirstOrDefault(item => item.SupportsFile(source.Path));
+                if (parser is null) continue;
+                var result = parser.Parse(source.Path, source.AppId);
+                if (result.Profile is not { } profile) continue;
+                if (IsUnlockListSource(source.LocationId, source.Path))
+                    profile = profile with { UnlistedAchievementsAreLocked = true };
+                profiles.Add(profile);
+            }
+
+            return (IReadOnlyList<GameProfile>)ProfileMerger.Merge(profiles);
+        }, cancellationToken);
+
+    private void EnumerateCandidates(
         string rootPath,
         List<string> candidates,
         List<string> issues,
@@ -115,6 +183,7 @@ public sealed class AchievementScanner
             var directory = pending.Pop();
             try
             {
+                if (IsPathInside(_generatedMetadataRoot, directory)) continue;
                 var attributes = File.GetAttributes(directory);
                 if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
 
@@ -136,6 +205,7 @@ public sealed class AchievementScanner
                 {
                     try
                     {
+                        if (IsPathInside(_generatedMetadataRoot, child)) continue;
                         if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
                         {
                             pending.Push(child);
@@ -192,6 +262,20 @@ public sealed class AchievementScanner
                 && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal));
     }
 
+    private static bool IsPathInside(string root, string path)
+    {
+        var relative = Path.GetRelativePath(root, Path.GetFullPath(path));
+        return relative == "."
+            || (!Path.IsPathRooted(relative)
+                && relative != ".."
+                && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal));
+    }
+
     private static bool IsAppId(string value) =>
         value.Length is >= 1 and <= 10 && value.All(char.IsAsciiDigit);
+
+    private static bool IsUnlockListSource(string locationId, string filePath) =>
+        string.Equals(Path.GetFileName(filePath), "achievements.json", StringComparison.OrdinalIgnoreCase)
+        && (string.Equals(locationId, "gse", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(locationId, "goldberg-steam", StringComparison.OrdinalIgnoreCase));
 }

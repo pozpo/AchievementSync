@@ -1,10 +1,19 @@
 using System.Security.Cryptography;
 using System.Net;
+using System.Net.Http;
+using System.IO;
+using System.Text.Json;
+using System.Reflection;
+using System.Diagnostics;
 using AchievementSync.Core.Metadata;
+using AchievementSync.Core.Models;
 using AchievementSync.Core.Parsing;
 using AchievementSync.Core.Scanning;
 using AchievementSync.Core.Synchronization;
 using AchievementSync.Core.Settings;
+using AchievementSync.Core.Tracking;
+using AchievementSync.Desktop.Services;
+using AchievementSync.Desktop.ViewModels;
 
 var tempRoot = Path.Combine(Path.GetTempPath(), "AchievementSync-smoke-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(tempRoot);
@@ -12,6 +21,177 @@ var checks = 0;
 
 try
 {
+    if (args.Contains("--playtime-wmi-fixture", StringComparer.OrdinalIgnoreCase))
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        return 0;
+    }
+
+    if (args.Contains("--readonly-viewer-compare", StringComparer.OrdinalIgnoreCase))
+    {
+        var settings = new SettingsStore().Load();
+        if (settings.AutoSyncAfterScan)
+        {
+            Console.WriteLine("Read-only comparison stopped because automatic sync is enabled in settings. No network requests were made.");
+            return 2;
+        }
+        if (string.IsNullOrWhiteSpace(settings.GitHubOwner) || string.IsNullOrWhiteSpace(settings.GitHubRepository)
+            || string.IsNullOrWhiteSpace(settings.GitHubBranch))
+        {
+            Console.WriteLine("Read-only viewer comparison skipped because no viewer repository is configured.");
+            return 2;
+        }
+
+        var localScan = await new AchievementScanner().ScanAsync(LocationCatalog.Build(settings));
+        var incompleteProfiles = localScan.Games
+            .Where(game => !game.HasCompleteCatalog && game.UnlistedAchievementsAreLocked)
+            .Concat(localScan.Games.Where(game => !game.HasCompleteCatalog && !game.UnlistedAchievementsAreLocked))
+            .Take(8)
+            .ToArray();
+        using var viewerHttp = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        var viewerClient = new ViewerGameInfoClient(viewerHttp, cacheDirectory: Path.Combine(tempRoot, "readonly-viewer-cache"));
+        var viewerProgressClient = new ViewerAchievementProgressClient(viewerHttp);
+        var gameDataUrl = $"https://raw.githubusercontent.com/{Uri.EscapeDataString(settings.GitHubOwner)}/{Uri.EscapeDataString(settings.GitHubRepository)}/{Uri.EscapeDataString(settings.GitHubBranch)}/game-data.json";
+        using var gameDataResponse = await viewerHttp.GetAsync(gameDataUrl);
+        if (!gameDataResponse.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"Viewer game-data readback failed with HTTP {(int)gameDataResponse.StatusCode}; no writes were attempted.");
+            return 3;
+        }
+        using var gameDataDocument = JsonDocument.Parse(await gameDataResponse.Content.ReadAsStringAsync());
+        var remoteGames = gameDataDocument.RootElement;
+        if (remoteGames.ValueKind == JsonValueKind.Object && TryGetJsonProperty(remoteGames, "games", out var gamesElement))
+            remoteGames = gamesElement;
+        if (remoteGames.ValueKind != JsonValueKind.Array)
+        {
+            Console.WriteLine("Viewer game-data has an unsupported structure; no writes were attempted.");
+            return 3;
+        }
+        var matches = 0;
+        var cataloguedMatches = 0;
+        var measurableMatches = 0;
+        var mergedCatalogComplete = 0;
+        var mergedCatalogsWithUnknownStates = 0;
+        var localIdsOutsideViewerCatalog = 0;
+        var catalogEntriesCompared = 0;
+        var profilesWithKnownLockedAbsenceSemantics = 0;
+        var matchedUnlockedIdentifiers = 0;
+        var localOnlyUnlockedIdentifiers = 0;
+        var viewerOnlyUnlockedIdentifiers = 0;
+        var viewerProgressFilesFound = 0;
+        var viewerProfileMeasurable = 0;
+        var viewerProfileUnlocked = 0;
+        var viewerProgressStatuses = new Dictionary<ViewerProgressStatus, int>();
+        var viewerRowsCompared = 0;
+        var viewerUnlockedTotal = 0;
+        var localKnownStateTotal = 0;
+        var localCatalogMatchedUnlocks = 0;
+        var matchedCounts = 0;
+        var statuses = new Dictionary<ViewerCatalogStatus, int>();
+        foreach (var game in incompleteProfiles)
+        {
+            var lookup = await viewerClient.GetCatalogAsync(
+                settings.GitHubOwner, settings.GitHubRepository, settings.GitHubBranch, game.AppId);
+            if (!lookup.Success || lookup.Catalog is null)
+            {
+                statuses[lookup.Status] = statuses.GetValueOrDefault(lookup.Status) + 1;
+                continue;
+            }
+
+            matches++;
+            if (game.UnlistedAchievementsAreLocked) profilesWithKnownLockedAbsenceSemantics++;
+            var enriched = AchievementSync.Core.Scanning.ProfileMerger.EnrichWithCatalog(game, lookup.Catalog);
+            if (enriched.TotalCount.HasValue) cataloguedMatches++;
+            if (enriched.CompletionPercent.HasValue) measurableMatches++;
+            if (enriched.HasCompleteCatalog) mergedCatalogComplete++;
+            if (enriched.TotalCount.HasValue && enriched.Achievements.Any(item => !item.IsUnlocked.HasValue))
+                mergedCatalogsWithUnknownStates++;
+
+            var viewerProgress = await viewerProgressClient.GetProgressAsync(
+                settings.GitHubOwner, settings.GitHubRepository, settings.GitHubBranch, game.AppId);
+            if (viewerProgress.Success && viewerProgress.Progress is not null)
+            {
+                viewerProgressFilesFound++;
+                var viewerMergedCard = new GameCardViewModel(game);
+                viewerMergedCard.ApplyCatalog(lookup.Catalog);
+                viewerMergedCard.ApplyViewerProgress(viewerProgress.Progress);
+                if (viewerMergedCard.Profile.CompletionPercent.HasValue) viewerProfileMeasurable++;
+                viewerProfileUnlocked += viewerMergedCard.Profile.UnlockedCount;
+            }
+            else
+            {
+                viewerProgressStatuses[viewerProgress.Status] = viewerProgressStatuses.GetValueOrDefault(viewerProgress.Status) + 1;
+            }
+
+            JsonElement remoteGame = default;
+            foreach (var item in remoteGames.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object && TryGetJsonProperty(item, "appid", out var remoteAppId)
+                    && remoteAppId.ValueKind == JsonValueKind.String
+                    && string.Equals(remoteAppId.GetString(), game.AppId, StringComparison.Ordinal))
+                {
+                    remoteGame = item;
+                    break;
+                }
+            }
+            if (remoteGame.ValueKind != JsonValueKind.Object
+                || !TryGetJsonProperty(remoteGame, "info", out var remoteInfo)
+                || !TryGetJsonProperty(remoteInfo, "achievements", out var remoteCatalog)
+                || remoteCatalog.ValueKind != JsonValueKind.Object
+                || !TryGetJsonProperty(remoteGame, "achievements", out var remoteProgress)
+                || remoteProgress.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var remoteCount = 0;
+            var remoteUnlocked = 0;
+            var localKnown = 0;
+            var localUnlocked = 0;
+            var remoteAchievementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var remoteUnlockedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var localUnlockedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var catalogEntry in remoteCatalog.EnumerateObject())
+            {
+                remoteCount++;
+                remoteAchievementIds.Add(catalogEntry.Name);
+                if (TryGetJsonProperty(remoteProgress, catalogEntry.Name, out var state)
+                    && TryGetJsonProperty(state, "earned", out var earned)
+                    && (earned.ValueKind == JsonValueKind.True || (earned.ValueKind == JsonValueKind.Number && earned.TryGetInt32(out var number) && number == 1)))
+                {
+                    remoteUnlocked++;
+                    remoteUnlockedIds.Add(catalogEntry.Name);
+                }
+
+                var localEntry = game.Achievements.FirstOrDefault(entry =>
+                    string.Equals(entry.ApiName, catalogEntry.Name, StringComparison.OrdinalIgnoreCase));
+                if (localEntry?.IsUnlocked is { } localState)
+                {
+                    localKnown++;
+                    if (localState)
+                    {
+                        localUnlocked++;
+                        localUnlockedIds.Add(catalogEntry.Name);
+                    }
+                }
+            }
+            catalogEntriesCompared += remoteCount;
+            localIdsOutsideViewerCatalog += game.Achievements.Count(localEntry => !remoteAchievementIds.Contains(localEntry.ApiName));
+            viewerRowsCompared++;
+            viewerUnlockedTotal += remoteUnlocked;
+            localKnownStateTotal += localKnown;
+            localCatalogMatchedUnlocks += localUnlocked;
+            matchedUnlockedIdentifiers += localUnlockedIds.Intersect(remoteUnlockedIds, StringComparer.OrdinalIgnoreCase).Count();
+            localOnlyUnlockedIdentifiers += localUnlockedIds.Except(remoteUnlockedIds, StringComparer.OrdinalIgnoreCase).Count();
+            viewerOnlyUnlockedIdentifiers += remoteUnlockedIds.Except(localUnlockedIds, StringComparer.OrdinalIgnoreCase).Count();
+            if (localKnown == remoteCount && localUnlocked == remoteUnlocked) matchedCounts++;
+        }
+
+        Console.WriteLine($"Read-only local scan: games={localScan.Games.Count}; files={localScan.CandidateFiles}; issues={localScan.Issues.Count}; incompleteCatalogGames={localScan.Games.Count(game => !game.HasCompleteCatalog)}.");
+        Console.WriteLine($"Public viewer read-only comparison: attempted={incompleteProfiles.Length}; catalogsFound={matches}; totalsAvailable={cataloguedMatches}; mergedCatalogsComplete={mergedCatalogComplete}; mergedCatalogsWithUnknownStates={mergedCatalogsWithUnknownStates}; localProgressMeasurable={measurableMatches}; profilesWithKnownLockedAbsenceSemantics={profilesWithKnownLockedAbsenceSemantics}; viewerProgressFilesFound={viewerProgressFilesFound}; mergedWithViewerMeasurable={viewerProfileMeasurable}; mergedViewerUnlocked={viewerProfileUnlocked}; gameDataRowsCompared={viewerRowsCompared}; viewerCatalogEntriesCompared={catalogEntriesCompared}; viewerUnlockedInComparedRows={viewerUnlockedTotal}; localKnownStatesWithinViewerCatalog={localKnownStateTotal}; localUnlockedWithinViewerCatalog={localCatalogMatchedUnlocks}; localIdsOutsideViewerCatalog={localIdsOutsideViewerCatalog}; matchingUnlockedIds={matchedUnlockedIdentifiers}; localOnlyUnlockedIds={localOnlyUnlockedIdentifiers}; viewerOnlyUnlockedIds={viewerOnlyUnlockedIdentifiers}; exactStateCountMatches={matchedCounts}; no uploads or source/settings writes; temporary test cache removed.");
+        foreach (var status in statuses.OrderBy(item => item.Key)) Console.WriteLine($"Viewer response {status.Key}: {status.Value}.");
+        foreach (var status in viewerProgressStatuses.OrderBy(item => item.Key)) Console.WriteLine($"Viewer progress response {status.Key}: {status.Value}.");
+        return 0;
+    }
+
     var jsonPath = Path.Combine(tempRoot, "achievements.json");
     File.WriteAllText(jsonPath, """
         {
@@ -21,8 +201,24 @@ try
         """);
     var jsonResult = new JsonAchievementParser().Parse(jsonPath, "100");
     Check(jsonResult.Success, "JSON object profile parses");
-    Check(jsonResult.Profile!.HasCompleteCatalog && jsonResult.Profile.Achievements.Count == 2, "JSON object catalog is complete");
+    Check(!jsonResult.Profile!.HasCompleteCatalog && jsonResult.Profile.Achievements.Count == 2
+        && jsonResult.Profile.Achievements.All(item => item.IsUnlocked.HasValue),
+        "JSON object keeps explicit player states but does not claim a full catalog without metadata");
     Check(jsonResult.Profile.Achievements.Single(item => item.ApiName == "ACH_ALPHA").IsUnlocked == true, "JSON true unlock state is retained");
+
+    var unlockedOnlyPath = Path.Combine(tempRoot, "unlocked-only.json");
+    File.WriteAllText(unlockedOnlyPath, "{\"ACH_ONLY_UNLOCKED\":{\"earned\":true,\"earned_time\":1700000000}}");
+    var unlockedOnlyResult = new JsonAchievementParser().Parse(unlockedOnlyPath, "101");
+    Check(unlockedOnlyResult.Success && !unlockedOnlyResult.Profile!.HasCompleteCatalog
+        && unlockedOnlyResult.Profile.Achievements.Single().IsUnlocked == true,
+        "unlocked-only JSON retains confirmed progress without claiming it is the full catalog");
+
+    var emptyJsonPath = Path.Combine(tempRoot, "empty", "achievements.json");
+    Directory.CreateDirectory(Path.GetDirectoryName(emptyJsonPath)!);
+    File.WriteAllText(emptyJsonPath, "{}");
+    var emptyJson = new JsonAchievementParser().Parse(emptyJsonPath, "102");
+    Check(emptyJson.Success && emptyJson.Profile!.Achievements.Count == 0 && !emptyJson.Profile.HasCompleteCatalog,
+        "an empty achievement object is retained as an empty progress snapshot without inventing a catalog");
 
     var dbPath = Path.Combine(tempRoot, "200.db");
     File.WriteAllText(dbPath, """
@@ -67,9 +263,10 @@ try
 
     var viewerDirectory = Path.Combine(tempRoot, "viewer", "730");
     Directory.CreateDirectory(viewerDirectory);
-    File.WriteAllText(Path.Combine(viewerDirectory, "game-info.json"), """
+    var viewerGameInfoJson = """
         {"appid":"730","name":"Fixture Game","icon":"fixture-icon","achievements":{"ACH_ALPHA":{"name":"Alpha","description":"Catalog description","icon":"https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/730/alpha.jpg","icongray":"gray","hidden":0},"ACH_BETA":{"name":"Beta","description":"Hidden catalog entry","icongray":"gray","hidden":1}}}
-        """);
+        """;
+    File.WriteAllText(Path.Combine(viewerDirectory, "game-info.json"), viewerGameInfoJson);
     File.WriteAllText(Path.Combine(viewerDirectory, "achievements.json"), """
         {"ACH_ALPHA":{"earned":true,"earned_time":1700000030}}
         """);
@@ -82,6 +279,67 @@ try
     Check(viewerLockedUnknown.IsUnlocked is null && viewerLockedUnknown.IsHidden, "viewer catalog metadata retains hidden and unknown state");
     Check(viewerGame.Achievements.Single(item => item.ApiName == "ACH_ALPHA").Description == "Catalog description",
         "viewer catalog supplies achievement descriptions and icons");
+    var parsedViewerCatalog = JsonAchievementParser.ParseViewerGameInfo(viewerGameInfoJson, "730");
+    Check(parsedViewerCatalog.Success && parsedViewerCatalog.Profile!.Achievements.All(item => item.IsUnlocked is null),
+        "viewer game-info parser keeps its catalog separate from player progress");
+
+    var gseUnlockListRoot = Path.Combine(tempRoot, "gse-unlock-list");
+    var gseUnlockListDirectory = Path.Combine(gseUnlockListRoot, "730");
+    Directory.CreateDirectory(gseUnlockListDirectory);
+    File.WriteAllText(Path.Combine(gseUnlockListDirectory, "achievements.json"),
+        "{\"ACH_ALPHA\":{\"earned\":true,\"earned_time\":1700000030}}");
+    var gseUnlockScan = await new AchievementScanner().ScanAsync(
+    [new ScanLocation("gse", "GSE Saves", gseUnlockListRoot, true, false, true)]);
+    var gseWithCatalog = ProfileMerger.EnrichWithCatalog(gseUnlockScan.Games.Single(), parsedViewerCatalog.Profile!);
+    Check(gseWithCatalog.TotalCount == 2 && gseWithCatalog.UnlockedCount == 1 && gseWithCatalog.CompletionPercent == 50
+        && gseWithCatalog.Achievements.Single(item => item.ApiName == "ACH_BETA").IsUnlocked == false,
+        "GSE unlock-list progress plus viewer catalog matches the viewer's documented missing-entry-is-locked rule");
+
+    var partialJsonRoot = Path.Combine(tempRoot, "partial-json");
+    var partialJsonDirectory = Path.Combine(partialJsonRoot, "730");
+    Directory.CreateDirectory(partialJsonDirectory);
+    File.WriteAllText(Path.Combine(partialJsonDirectory, "achievements.json"),
+        "{\"ACH_ALPHA\":{\"earned\":true,\"earned_time\":1700000030}}");
+    var partialJsonScan = await new AchievementScanner().ScanAsync(
+    [new ScanLocation("custom-partial", "Partial JSON", partialJsonRoot, true, true, true)]);
+    var partialWithCatalog = ProfileMerger.EnrichWithCatalog(partialJsonScan.Games.Single(), parsedViewerCatalog.Profile!);
+    Check(partialWithCatalog.UnlockedCount == 1 && partialWithCatalog.CompletionPercent is null
+        && partialWithCatalog.Achievements.Single(item => item.ApiName == "ACH_BETA").IsUnlocked is null,
+        "partial JSON progress preserves confirmed unlocks but does not infer absent states for an unknown format");
+    var partialGameCard = new GameCardViewModel(partialJsonScan.Games.Single());
+    var viewerSavedProgress = JsonAchievementParser.ParseViewerAchievementProgress(
+        "{\"ACH_ALPHA\":{\"earned\":true,\"earned_time\":1700000030}}", "730", "viewer://pozpo/viewer/user/AppID/730/achievements.json");
+    Check(viewerSavedProgress.Success && viewerSavedProgress.Profile is { HasCompleteCatalog: false, UnlistedAchievementsAreLocked: true },
+        "viewer progress parser keeps saved unlocks separate and records the viewer's missing-entry-is-locked rule");
+    partialGameCard.ApplyCatalog(parsedViewerCatalog.Profile!);
+    partialGameCard.ApplyViewerProgress(viewerSavedProgress.Profile!);
+    Check(partialGameCard.Profile.CompletionPercent == 50
+        && partialGameCard.Profile.Achievements.Single(item => item.ApiName == "ACH_BETA").IsUnlocked == false
+        && partialGameCard.SourceCountText.Contains("public viewer progress", StringComparison.OrdinalIgnoreCase),
+        "public viewer saved progress completes a partial local profile without replacing confirmed local unlocks");
+    var conflictingViewerProgress = JsonAchievementParser.ParseViewerAchievementProgress(
+        "{\"ACH_ALPHA\":{\"earned\":false}}", "730", "viewer://pozpo/viewer/user/AppID/730/achievements.json");
+    var localUnlockWinsCard = new GameCardViewModel(partialJsonScan.Games.Single());
+    localUnlockWinsCard.ApplyCatalog(parsedViewerCatalog.Profile!);
+    localUnlockWinsCard.ApplyViewerProgress(conflictingViewerProgress.Profile!);
+    Check(localUnlockWinsCard.Profile.Achievements.Single(item => item.ApiName == "ACH_ALPHA").IsUnlocked == true,
+        "viewer progress merging never downgrades a confirmed local unlock");
+    var emptyViewerProgress = JsonAchievementParser.ParseViewerAchievementProgress("{}", "730", "viewer://pozpo/viewer/user/AppID/730/achievements.json");
+    var emptyViewerCard = new GameCardViewModel(new GameProfile("730", null, [], [], false));
+    emptyViewerCard.ApplyCatalog(parsedViewerCatalog.Profile!);
+    emptyViewerCard.ApplyViewerProgress(emptyViewerProgress.Profile!);
+    Check(emptyViewerCard.Profile.CompletionPercent == 0,
+        "an existing empty viewer progress file with a complete catalog represents confirmed zero percent");
+
+    var emptyGseRoot = Path.Combine(tempRoot, "empty-gse");
+    var emptyGseDirectory = Path.Combine(emptyGseRoot, "730");
+    Directory.CreateDirectory(emptyGseDirectory);
+    File.WriteAllText(Path.Combine(emptyGseDirectory, "achievements.json"), "{}");
+    var emptyGseScan = await new AchievementScanner().ScanAsync(
+    [new ScanLocation("gse", "GSE Saves", emptyGseRoot, true, false, true)]);
+    var emptyGseWithCatalog = ProfileMerger.EnrichWithCatalog(emptyGseScan.Games.Single(), parsedViewerCatalog.Profile!);
+    Check(emptyGseWithCatalog.UnlockedCount == 0 && emptyGseWithCatalog.CompletionPercent == 0,
+        "an empty GSE unlock snapshot with a complete catalog represents zero confirmed unlocks");
     var viewerExport = AchievementExportPlanner.Build([viewerGame]).Single();
     Check(viewerExport.RelativePath == "AppID/730/achievements.json" && viewerExport.AchievementCount == 1,
         "viewer export preview uses the compatible AppID file path and excludes unknown state");
@@ -293,6 +551,423 @@ try
         Check(concurrentWriteStopped && githubPushCalls == 4,
             "GitHub push refuses a stale preview before creating commit data");
     }
+    var numericMerge = AchievementJsonMerge.Merge(
+        """{"ACH_LOCAL":{"earned":true,"earned_time":1700000000}}""",
+        """{"ACH_REMOTE":{"earned":1,"earned_time":1700000001},"ACH_ZERO":{"earned":0,"earned_time":0}}""");
+    Check(numericMerge.Contains("\"ACH_LOCAL\"", StringComparison.Ordinal)
+        && numericMerge.Contains("\"ACH_REMOTE\"", StringComparison.Ordinal)
+        && numericMerge.Contains("\"ACH_ZERO\"", StringComparison.Ordinal)
+        && numericMerge.Contains("\"earned\": true", StringComparison.Ordinal)
+        && numericMerge.Contains("\"earned\": false", StringComparison.Ordinal),
+        "remote achievement data written with numeric earned values merges without losing states");
+
+    var measurableGame = new GameProfile("570", "Fixture Game", [],
+    [
+        new AchievementRecord("ACH_EARNED", "Earned", null, true, 1700000000),
+        new AchievementRecord("ACH_LOCKED", "Locked", null, false, 0)
+    ], HasCompleteCatalog: true);
+    var unknownStateGame = new GameProfile("730", "Unknown Fixture", [],
+    [new AchievementRecord("ACH_UNKNOWN", "Unknown", null, null, null)], HasCompleteCatalog: true);
+    var partialCatalogGame = new GameProfile("440", "Partial Fixture", [],
+    [
+        new AchievementRecord("ACH_KNOWN", "Known", null, true, 1700000100),
+        new AchievementRecord("ACH_UNVERIFIED", "Unverified", null, null, null)
+    ], HasCompleteCatalog: false);
+    var completeSummary = GameLibrarySummary.Calculate([measurableGame]);
+    Check(completeSummary.GameCount == 1 && completeSummary.TotalUnlocked == 1
+        && completeSummary.TotalCatalogAchievements == 2 && completeSummary.CompletionPercent == 50,
+        "fully measured catalog summary reports accurate counts and completion");
+    var mixedSummary = GameLibrarySummary.Calculate([measurableGame, unknownStateGame]);
+    Check(mixedSummary.TotalCatalogAchievements == 3 && mixedSummary.TotalKnownAchievements == 2
+        && mixedSummary.CompletionPercent == 50 && mixedSummary.MeasurableGameCount == 1
+        && mixedSummary.CataloguedGameCount == 2 && mixedSummary.GamesWithUnknownPlayerState == 1,
+        "dashboard keeps measurable-game completion and known catalog/state coverage when another game is incomplete");
+    var partialSummary = GameLibrarySummary.Calculate([partialCatalogGame]);
+    Check(partialSummary.TotalCatalogAchievements is null && partialSummary.TotalKnownAchievements == 1
+        && partialSummary.CompletionPercent is null,
+        "partial catalog summary counts only known states and leaves completion unavailable");
+
+    Check(AppIdValidator.IsValid("570940") && AppIdValidator.IsValid("1")
+        && !AppIdValidator.IsValid("000") && !AppIdValidator.IsValid("not-an-appid")
+        && !AppIdValidator.IsValid("12345678901"),
+        "shared AppID validation rejects malformed identifiers without network access");
+
+    var pngBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/GhoAAAAASUVORK5CYII=");
+    var artworkCachePath = Path.Combine(tempRoot, "artwork-cache");
+    var artworkRequests = 0;
+    using (var artworkHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        artworkRequests++;
+        if (request.RequestUri!.Host == "store.steampowered.com")
+            return Task.FromResult(JsonResponse("""{"570940":{"success":true,"data":{"name":"DARK SOULS: REMASTERED","header_image":"https://shared.steamstatic.com/header.png"}}}"""));
+        if (request.RequestUri.Host == "shared.steamstatic.com")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(pngBytes) });
+        throw new InvalidOperationException("Unexpected artwork host.");
+    })))
+    {
+        var artworkMetadata = await new SteamMetadataCache(artworkCachePath, artworkHttp).GetAsync("570940");
+        Check(artworkMetadata?.Name == "DARK SOULS: REMASTERED" && artworkMetadata.ArtworkPath is { } artworkFile
+            && File.Exists(artworkFile)
+            && artworkFile == Path.Combine(artworkCachePath, "570940", "570940.cover")
+            && File.Exists(Path.Combine(artworkCachePath, "570940", "steam.json")),
+            "Steam artwork and metadata use the AppID-scoped native metadata cache");
+        var artworkCard = new GameCardViewModel(new GameProfile("570940", null, [], [], false));
+        artworkCard.ApplyMetadata(artworkMetadata!);
+        Check(artworkCard.Artwork is not null && artworkCard.FallbackVisibility == System.Windows.Visibility.Collapsed,
+            "cached cover art decodes into a WPF image for a game card");
+    }
+
+    // The public Steam Store listing reports how many achievements an app defines, hidden ones included.
+    // When a local GSE profile already carries a state for every listed achievement, the listing
+    // completes the catalog instead of leaving the total permanently unknown.
+    const string storeListingJson = """{"4115450":{"success":true,"data":{"name":"Fixture Game","header_image":"https://shared.steamstatic.com/header.png","achievements":{"total":3,"highlighted":[{"icon":"https://shared.steamstatic.com/icon.jpg","localized_name":"Hidden One","archived":0,"hidden":1,"name":"Hidden One","path":"https://shared.steamstatic.com/icon.jpg"}]}}}}""";
+    Check(SteamStoreMetadataParser.Parse("4115450", storeListingJson)?.AchievementsTotal == 3,
+        "Steam Store listing exposes the achievement total including hidden entries");
+    Check(SteamStoreMetadataParser.Parse("4115450", """{"4115450":{"success":true,"data":{"name":"No Achievements","header_image":"https://shared.steamstatic.com/header.png"}}}""")?.AchievementsTotal is null,
+        "Steam Store listing without an achievements section yields no total instead of a guess");
+    var storeListingCache = Path.Combine(tempRoot, "store-listing-cache");
+    using (var storeListingHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(JsonResponse(storeListingJson)))))
+    {
+        var listingMetadata = await new SteamMetadataCache(storeListingCache, storeListingHttp).GetAsync("4115450");
+        Check(listingMetadata?.AchievementsTotal == 3
+            && File.Exists(Path.Combine(storeListingCache, "4115450", "steam.json")),
+            "Steam Store listing total is cached per AppID for later launches");
+        using (var listingReopenHttp = new HttpClient(new TestHttpHandler((_, _) =>
+            throw new InvalidOperationException("A fresh cache entry should not download again."))))
+        {
+            var reopenedListing = await new SteamMetadataCache(storeListingCache, listingReopenHttp).GetAsync("4115450");
+            Check(reopenedListing?.AchievementsTotal == 3,
+                "cached Steam listing total is reused without another request");
+        }
+        var legacyListingCache = Path.Combine(tempRoot, "legacy-listing-cache");
+        var legacyListingDir = Path.Combine(legacyListingCache, "4115452");
+        Directory.CreateDirectory(legacyListingDir);
+        await File.WriteAllTextAsync(Path.Combine(legacyListingDir, "steam.json"), JsonSerializer.Serialize(new
+        {
+            AppId = "4115452",
+            Name = "Legacy Fixture",
+            ArtworkPath = (string?)null,
+            LastCheckedUtc = DateTimeOffset.UtcNow.AddHours(-7)
+        }));
+        var legacyListingHttp = new HttpClient(new TestHttpHandler((_, _) =>
+            Task.FromResult(JsonResponse(storeListingJson.Replace("4115450", "4115452", StringComparison.Ordinal)))));
+        var backfilledListing = await new SteamMetadataCache(legacyListingCache, legacyListingHttp).GetAsync("4115452");
+        Check(backfilledListing?.AchievementsTotal == 3 && backfilledListing?.Name == "Fixture Game",
+            "a legacy cache entry without a recorded listing total backfills it once");
+    }
+    var listingGameCard = new GameCardViewModel(new GameProfile("4115450", null, [],
+    [
+        new AchievementRecord("ACH_001", null, null, true, 1700000001),
+        new AchievementRecord("ACH_002", null, null, false, 0),
+        new AchievementRecord("ACH_003", null, null, true, 1700000002)
+    ], HasCompleteCatalog: false));
+    listingGameCard.ApplyMetadata(new CachedSteamMetadata("4115450", "Fixture Game", null, DateTimeOffset.UtcNow, 3));
+    Check(listingGameCard.TotalCount == 3
+        && listingGameCard.Profile.HasCompleteCatalog
+        && listingGameCard.Progress == 66.7
+        && listingGameCard.AchievementCountText.Contains("2 / 3", StringComparison.Ordinal),
+        "a local GSE profile whose known states match the Steam listing total completes the catalog");
+    var listingMismatchCard = new GameCardViewModel(new GameProfile("4115451", null, [],
+    [
+        new AchievementRecord("ACH_001", null, null, true, 1700000001)
+    ], HasCompleteCatalog: false));
+    listingMismatchCard.ApplyMetadata(new CachedSteamMetadata("4115451", "Fixture Game", null, DateTimeOffset.UtcNow, 3));
+    Check(listingMismatchCard.TotalCount is null && !listingMismatchCard.Profile.HasCompleteCatalog,
+        "a Steam listing total that does not match the known local states stays unknown instead of guessing");
+
+    using (var reopenedArtworkHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        throw new InvalidOperationException("A fresh cache entry should not trigger another download."))))
+    {
+        var reopenedArtwork = await new SteamMetadataCache(artworkCachePath, reopenedArtworkHttp).GetAsync("570940");
+        Check(reopenedArtwork?.ArtworkPath is { } reopenedPath && File.Exists(reopenedPath) && artworkRequests == 2,
+            "cached title and artwork reopen without a second metadata or image download");
+    }
+
+    var legacyArtworkCache = Path.Combine(tempRoot, "legacy-art-cache");
+    var legacyCover = Path.Combine(legacyArtworkCache, "570940.cover");
+    Directory.CreateDirectory(legacyArtworkCache);
+    await File.WriteAllBytesAsync(legacyCover, pngBytes);
+    await File.WriteAllTextAsync(Path.Combine(legacyArtworkCache, "570940.json"), JsonSerializer.Serialize(new
+    {
+        AppId = "570940",
+        Name = "DARK SOULS: REMASTERED",
+        ArtworkPath = legacyCover,
+        LastCheckedUtc = DateTimeOffset.UtcNow
+    }));
+    using (var legacyArtworkHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        throw new InvalidOperationException("A fresh legacy cache migration should not make a network request."))))
+    {
+        var migratedArtwork = await new SteamMetadataCache(legacyArtworkCache, legacyArtworkHttp).GetAsync("570940");
+        Check(migratedArtwork?.Name == "DARK SOULS: REMASTERED"
+            && migratedArtwork.ArtworkPath == Path.Combine(legacyArtworkCache, "570940", "570940.cover")
+            && File.Exists(Path.Combine(legacyArtworkCache, "570940", "steam.json"))
+            && SHA256.HashData(File.ReadAllBytes(legacyCover)).SequenceEqual(SHA256.HashData(File.ReadAllBytes(migratedArtwork.ArtworkPath))),
+            "legacy artwork cache migrates by copy into the new AppID directory without changing the old cache");
+    }
+
+    using (var corruptedArtworkHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        if (request.RequestUri!.Host == "store.steampowered.com")
+            return Task.FromResult(JsonResponse("""{"570940":{"success":true,"data":{"name":"DARK SOULS: REMASTERED","header_image":"https://shared.steamstatic.com/header.png"}}}"""));
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes("not an image"))
+        });
+    })))
+    {
+        var fallbackMetadata = await new SteamMetadataCache(Path.Combine(tempRoot, "bad-art-cache"), corruptedArtworkHttp).GetAsync("570940");
+        var fallbackCard = new GameCardViewModel(new GameProfile("570940", null, [], [], false));
+        if (fallbackMetadata is not null) fallbackCard.ApplyMetadata(fallbackMetadata);
+        Check(fallbackMetadata?.Name == "DARK SOULS: REMASTERED" && fallbackMetadata.ArtworkPath is null
+            && fallbackCard.Artwork is null && fallbackCard.FallbackVisibility == System.Windows.Visibility.Visible,
+            "corrupted cover bytes keep the title and display the existing fallback instead of a broken image");
+    }
+
+    using (var failedArtworkHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)))))
+    {
+        Check(await new SteamMetadataCache(Path.Combine(tempRoot, "missing-art-cache"), failedArtworkHttp).GetAsync("570940") is null,
+            "unavailable Steam metadata leaves the game card on its fallback artwork without throwing");
+    }
+
+    var achievementRowType = typeof(AchievementSync.Desktop.GameDetailsWindow).Assembly
+        .GetType("AchievementSync.Desktop.AchievementRow", throwOnError: true)!;
+    var detailsWindowType = typeof(AchievementSync.Desktop.GameDetailsWindow);
+    var emptyStateVisibility = detailsWindowType.GetMethod(
+        "GetAchievementEmptyStateVisibility", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("The achievement empty-state visibility check was not found.");
+    Check((System.Windows.Visibility)emptyStateVisibility.Invoke(null, [0])! == System.Windows.Visibility.Visible
+        && (System.Windows.Visibility)emptyStateVisibility.Invoke(null, [1])! == System.Windows.Visibility.Collapsed,
+        "game details show an explanatory empty state only when no achievements match");
+    var detailsXaml = File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "GameDetailsWindow.xaml")));
+    Check(detailsXaml.Contains("x:Name=\"CatalogNote\"", StringComparison.Ordinal)
+        && detailsXaml.Contains("x:Name=\"CatalogNote\" FontSize=\"10\" Foreground=\"{StaticResource MutedBrush}\" Margin=\"0,4,0,0\" TextWrapping=\"Wrap\"",
+            StringComparison.Ordinal),
+        "game details catalog note wraps instead of overlapping the search field at narrow widths");
+    var mainWindowXaml = File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "MainWindow.xaml")));
+    var appXaml = File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "App.xaml")));
+    Check(mainWindowXaml.Contains("Browse every discovered game, filter by progress, or sort by name and recent unlock.", StringComparison.Ordinal)
+        && mainWindowXaml.Contains("TextWrapping=\"Wrap\"/></StackPanel><TextBox Grid.Column=\"1\"", StringComparison.Ordinal),
+        "Game Library description wraps within its title column at narrow window widths");
+
+    Check(!mainWindowXaml.Contains("Overview", StringComparison.OrdinalIgnoreCase)
+        && !mainWindowXaml.Contains("IsOverviewVisible", StringComparison.Ordinal),
+        "Overview navigation and page markup are removed");
+    var statsPosition = mainWindowXaml.IndexOf("GAMES FOUND", StringComparison.Ordinal);
+    var libraryPosition = mainWindowXaml.IndexOf("Your game library", StringComparison.Ordinal);
+    Check(statsPosition >= 0 && statsPosition < libraryPosition
+        && mainWindowXaml.Contains("KNOWN STATES", StringComparison.Ordinal)
+        && mainWindowXaml.Contains("UNLOCKED", StringComparison.Ordinal)
+        && mainWindowXaml.Contains("COMPLETION", StringComparison.Ordinal),
+        "Game Library displays all four statistics before its browsing controls");
+    Check(!detailsXaml.Contains("Identify game", StringComparison.OrdinalIgnoreCase)
+        && !detailsXaml.Contains("IdentifyGame", StringComparison.Ordinal),
+        "manual game identification controls are absent from game details");
+    Check(appXaml.Contains("<Border Background=\"#151B25\"", StringComparison.Ordinal)
+        && appXaml.Contains("Value=\"#293447\"", StringComparison.Ordinal)
+        && appXaml.Contains("x:Key=\"GameCardSurface\"", StringComparison.Ordinal),
+        "shared WPF theme supplies opaque dark dropdown surfaces and dark card interaction states");
+    var nameDialogXaml = File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "GameNameDialog.xaml")));
+    Check(nameDialogXaml.Contains("ResizeMode=\"CanResize\"", StringComparison.Ordinal)
+        && nameDialogXaml.Contains("IsCancel=\"True\"", StringComparison.Ordinal)
+        && nameDialogXaml.Contains("IsDefault=\"True\"", StringComparison.Ordinal),
+        "Edit Name remains resizable and keeps keyboard-accessible Cancel and Confirm actions");
+    var detailsCode = File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "GameDetailsWindow.xaml.cs")));
+    var nameDialogCode = File.ReadAllText(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "GameNameDialog.xaml.cs")));
+    Check(detailsCode.Contains("WindowAppearance.Apply", StringComparison.Ordinal)
+        && nameDialogCode.Contains("WindowAppearance.Apply", StringComparison.Ordinal),
+        "owned WPF dialogs apply the same native Windows title-bar appearance as the main window");
+    var runtimeSourceRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+        "..", "..", "..", "..", "..", "src"));
+    var runtimeHasPowerShellReference = Directory.EnumerateFiles(runtimeSourceRoot, "*.cs", SearchOption.AllDirectories)
+        .Where(path => !path.Split(Path.DirectorySeparatorChar).Any(part => part is "bin" or "obj"))
+        .Any(path =>
+        {
+            var content = File.ReadAllText(path);
+            return content.Contains("powershell.exe", StringComparison.OrdinalIgnoreCase)
+                || content.Contains("pwsh.exe", StringComparison.OrdinalIgnoreCase)
+                || content.Contains(".ps1", StringComparison.OrdinalIgnoreCase);
+        });
+    Check(!runtimeHasPowerShellReference,
+        "native C# runtime source does not execute or depend on PowerShell scripts");
+
+    var iconFactory = achievementRowType.GetMethod("CreateIconImage", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("Achievement icon factory was not found.");
+    var onDemandIcon = iconFactory.Invoke(null,
+        ["https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/730/achievement-icon.png"])
+        as System.Windows.Media.Imaging.BitmapImage;
+    Check(onDemandIcon is not null,
+        "achievement detail icon creation tolerates an asynchronous on-demand WPF image without crashing");
+
+    var cachePathBlockedByFile = Path.Combine(tempRoot, "cache-path-is-a-file");
+    File.WriteAllText(cachePathBlockedByFile, "existing file");
+    using (var unusedArtworkHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        throw new InvalidOperationException("Cache storage failure must not require a network request."))))
+    {
+        var uncachedMetadata = await new SteamMetadataCache(cachePathBlockedByFile, unusedArtworkHttp)
+            .StoreAsync(new SteamGameMetadata("570940", "DARK SOULS: REMASTERED", new Uri("https://shared.steamstatic.com/header.png")));
+        Check(uncachedMetadata?.Name == "DARK SOULS: REMASTERED" && uncachedMetadata.ArtworkPath is null,
+            "metadata caching failure preserves successful game identification and uses artwork fallback");
+    }
+
+    using (var viewerCatalogHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        Check(request.RequestUri!.Host == "raw.githubusercontent.com"
+            && request.RequestUri.AbsolutePath.EndsWith("/user/AppID/730/game-info.json", StringComparison.Ordinal),
+            "viewer catalog lookup reads only the configured public game-info path");
+        return Task.FromResult(JsonResponse("""{"appid":"730","name":"Fixture Game","achievements":{}}"""));
+    })))
+    {
+        var catalog = await new ViewerGameInfoClient(viewerCatalogHttp, cacheDirectory: Path.Combine(tempRoot, "viewer-cache-empty"))
+            .GetCatalogAsync("pozpo", "achievement-viewer", "user", "730");
+        Check(catalog.Success && catalog.Catalog!.HasCompleteCatalog && catalog.Catalog.Achievements.Count == 0,
+            "viewer game-info accepts a valid empty catalog without inventing achievements");
+    }
+
+    using (var malformedViewerCatalogHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(JsonResponse("not json")))))
+    {
+        Check((await new ViewerGameInfoClient(malformedViewerCatalogHttp, cacheDirectory: Path.Combine(tempRoot, "viewer-cache-malformed"))
+            .GetCatalogAsync("pozpo", "viewer", "user", "730")).Status
+            == ViewerCatalogStatus.MalformedResponse,
+            "viewer catalog lookup reports malformed JSON as unavailable metadata");
+    }
+
+    using (var missingViewerCatalogHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)))))
+    {
+        Check((await new ViewerGameInfoClient(missingViewerCatalogHttp, cacheDirectory: Path.Combine(tempRoot, "viewer-cache-missing"))
+            .GetCatalogAsync("pozpo", "viewer", "user", "730")).Status
+            == ViewerCatalogStatus.NotFound,
+            "viewer catalog lookup distinguishes a missing generated catalog from player progress");
+    }
+
+    using (var viewerProgressHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        Check(request.RequestUri!.Host == "raw.githubusercontent.com"
+            && request.RequestUri.AbsolutePath.EndsWith("/user/AppID/730/achievements.json", StringComparison.Ordinal),
+            "viewer progress lookup reads only the configured public AppID JSON path");
+        return Task.FromResult(JsonResponse("{\"ACH_ALPHA\":{\"earned\":true,\"earned_time\":1700000030}}"));
+    })))
+    {
+        var progress = await new ViewerAchievementProgressClient(viewerProgressHttp)
+            .GetProgressAsync("pozpo", "achievement-viewer", "user", "730");
+        Check(progress.Success && progress.Progress!.Achievements.Single().IsUnlocked == true,
+            "public viewer progress lookup parses the user's saved unlocks");
+    }
+
+    using (var missingViewerProgressHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)))))
+    {
+        Check((await new ViewerAchievementProgressClient(missingViewerProgressHttp)
+            .GetProgressAsync("pozpo", "viewer", "user", "730")).Status == ViewerProgressStatus.NotFound,
+            "missing viewer progress remains distinct from a confirmed zero-unlock profile");
+    }
+
+    using (var malformedViewerProgressHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(JsonResponse("not json")))))
+    {
+        Check((await new ViewerAchievementProgressClient(malformedViewerProgressHttp)
+            .GetProgressAsync("pozpo", "viewer", "user", "730")).Status == ViewerProgressStatus.MalformedResponse,
+            "malformed viewer progress is ignored instead of becoming locked progress");
+    }
+
+    using (var invalidViewerProgressHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        throw new InvalidOperationException("Invalid AppID must not request the viewer."))))
+    {
+        Check((await new ViewerAchievementProgressClient(invalidViewerProgressHttp)
+            .GetProgressAsync("pozpo", "viewer", "user", "not-an-appid")).Status == ViewerProgressStatus.InvalidAppId,
+            "viewer progress lookup rejects invalid AppIDs without making a request");
+    }
+
+    using (var mainWindowIdentifierHttp = new HttpClient(new TestHttpHandler((_, _) =>
+        Task.FromResult(JsonResponse("""{"570940":{"success":true,"data":{"name":"DARK SOULS: REMASTERED"}}}""")))))
+    {
+        var libraryViewModel = new MainViewModel(
+            new AchievementSync.Desktop.Services.SteamMetadataCache(Path.Combine(tempRoot, "identify-cache")),
+            new AppSettings(),
+            readStoredCredential: false,
+            enableDiagnostics: false);
+        Check(libraryViewModel.IsGamesVisible && libraryViewModel.CurrentPage == "Games",
+            "Game Library is the primary page when the application opens");
+        libraryViewModel.NavigationCommand.Execute("Activity");
+        Check(libraryViewModel.IsActivityVisible,
+            "Sync Activity navigation remains available without an Overview page");
+        libraryViewModel.NavigationCommand.Execute("Games");
+        Check(libraryViewModel.IsGamesVisible,
+            "Game Library navigation remains available without an Overview page");
+
+        var startupOffViewModel = new MainViewModel(
+            new AchievementSync.Desktop.Services.SteamMetadataCache(Path.Combine(tempRoot, "startup-cache-off")),
+            new AppSettings(),
+            readStoredCredential: false,
+            enableDiagnostics: false);
+        Check(startupOffViewModel.StartupStatus == "Windows startup is off.",
+            "startup status label reflects a disabled Windows startup setting at load");
+        var startupEnabledViewModel = new MainViewModel(
+            new AchievementSync.Desktop.Services.SteamMetadataCache(Path.Combine(tempRoot, "startup-cache-enabled")),
+            new AppSettings { StartWithWindows = true },
+            readStoredCredential: false,
+            enableDiagnostics: false);
+        Check(startupEnabledViewModel.StartupStatus == "AchievementSync will start minimized to the tray when you sign in.",
+            "startup status label reflects an enabled Windows startup setting at load");
+
+        var completeCard = new GameCardViewModel(new GameProfile("1", "Alpha", [],
+        [
+            new AchievementRecord("A", "A", null, true, 1700000200),
+            new AchievementRecord("B", "B", null, false, 0)
+        ], true));
+        var perfectCard = new GameCardViewModel(new GameProfile("2", "Beta", [],
+            [new AchievementRecord("C", "C", null, true, 1700000300)], true));
+        libraryViewModel.Games.Add(completeCard);
+        libraryViewModel.Games.Add(perfectCard);
+        libraryViewModel.SelectedGameFilter = "Measurable progress";
+        Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().Count() == 2,
+            "Game Library progress filter retains games with measurable progress");
+        libraryViewModel.SelectedGameFilter = "Completed";
+        Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().Single().AppId == "2",
+            "Game Library completed filter selects only fully completed games");
+        libraryViewModel.SelectedGameFilter = "All games";
+        libraryViewModel.SearchText = "Alpha";
+        Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().Single().Title == "Alpha",
+            "Game Library search filters by display title");
+        libraryViewModel.SearchText = string.Empty;
+        libraryViewModel.SelectedGameSort = "Progress";
+        Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().First().AppId == "2",
+            "Game Library progress sort orders measurable completion before lower progress");
+        libraryViewModel.SelectedGameFilter = "Needs information";
+        Check(libraryViewModel.GamesView.IsEmpty,
+            "Game Library exposes an empty state when no games match the selected filter");
+        libraryViewModel.SelectedGameFilter = "All games";
+        GameCardViewModel? openedGame = null;
+        libraryViewModel.GameRequested += (_, game) => openedGame = game;
+        libraryViewModel.OpenGameCommand.Execute(perfectCard);
+        Check(ReferenceEquals(openedGame, perfectCard) && libraryViewModel.CurrentPage == "Games",
+            "opening a game from the library raises the details request");
+    }
+
+    var viewerCacheRequests = 0;
+    using (var cachedViewerHttp = new HttpClient(new TestHttpHandler((_, _) =>
+    {
+        viewerCacheRequests++;
+        return Task.FromResult(JsonResponse("""{"appid":"730","name":"Fixture Game","achievements":{"ACH_A":{"name":"Alpha"}}}"""));
+    })))
+    {
+        var catalogCache = new ViewerGameInfoClient(cachedViewerHttp,
+            cacheDirectory: Path.Combine(tempRoot, "viewer-cache-persisted"));
+        var firstCatalog = await catalogCache.GetCatalogAsync("pozpo", "viewer", "user", "730");
+        var secondCatalog = await catalogCache.GetCatalogAsync("pozpo", "viewer", "user", "730");
+        Check(firstCatalog.Success && secondCatalog.Success && viewerCacheRequests == 1
+            && secondCatalog.Catalog!.Achievements.Single().ApiName == "ACH_A",
+            "viewer catalog metadata is cached and reused without repeated downloads");
+    }
 
     var storeMetadata = SteamStoreMetadataParser.Parse("570940", """
         {"570940":{"success":true,"data":{"name":"DARK SOULS: REMASTERED","header_image":"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/570940/header.jpg"}}}
@@ -326,7 +1001,9 @@ try
     Check(scan.Games.Count == 1 && scan.Games[0].AppId == "730", "duplicate profiles group by numeric game folder");
     var merged = scan.Games[0];
     Check(merged.Achievements.Count == 3, "duplicate merge retains the union of achievements");
-    Check(merged.UnlockedCount == 2 && merged.TotalCount == 3, "merged completion counts are accurate");
+    Check(merged.UnlockedCount == 2 && merged.KnownStateCount == 3 && merged.TotalCount is null
+        && merged.CompletionPercent is null,
+        "merged profile retains all known states but withholds a total when duplicate sources disagree on catalog completeness");
     Check(merged.Achievements.Single(item => item.ApiName == "ACH_SHARED").UnlockTimeUnix == 200, "merged unlock uses newest valid timestamp");
     Check(merged.SourceFiles.Count == 2, "merged profile keeps both source paths for preview");
     Check(!scan.Locations.Single(item => item.Id == "missing").IsAvailable, "missing location is reported unavailable");
@@ -339,6 +1016,639 @@ try
     var corruptScan = await new AchievementScanner().ScanAsync(
     [new ScanLocation("bad", "Bad", Path.Combine(tempRoot, "bad"), true, true, true)]);
     Check(corruptScan.Games.Count == 0 && corruptScan.Issues.Count > 0, "corrupt profiles are skipped with a diagnostic");
+
+    var formatsRoot = Path.Combine(tempRoot, "supported-formats");
+    var gseDirectory = Path.Combine(formatsRoot, "Goldberg", "nested", "730");
+    var watcherDirectory = Path.Combine(formatsRoot, "Achievement Watcher", "cache");
+    var uplayDirectory = Path.Combine(formatsRoot, "Uplay", "profile");
+    var iniDirectory = Path.Combine(formatsRoot, "ini", "733");
+    var malformedDirectory = Path.Combine(formatsRoot, "malformed", "734");
+    var unidentifiedDirectory = Path.Combine(formatsRoot, "unidentified");
+    var olderDuplicateDirectory = Path.Combine(formatsRoot, "duplicate-old", "735");
+    var newerDuplicateDirectory = Path.Combine(formatsRoot, "duplicate-new", "735");
+    foreach (var directory in new[] { gseDirectory, watcherDirectory, uplayDirectory, iniDirectory, malformedDirectory, unidentifiedDirectory, olderDuplicateDirectory, newerDuplicateDirectory })
+        Directory.CreateDirectory(directory);
+
+    var gsePath = Path.Combine(gseDirectory, "achievements.json");
+    File.WriteAllText(gsePath, "{\"GSE_EARNED\":{\"earned\":true,\"earned_time\":1700000300},\"GSE_LOCKED\":{\"earned\":false,\"earned_time\":0}}");
+    var scannerDbPath = Path.Combine(watcherDirectory, "731.db");
+    File.WriteAllText(scannerDbPath, "[{\"apiname\":\"DB_EARNED\",\"achieved\":1,\"unlocktime\":1700000310},{\"apiname\":\"DB_LOCKED\",\"achieved\":0,\"unlocktime\":0}]");
+    var uplayMarker = Path.Combine(uplayDirectory, "steam_appid.txt");
+    File.WriteAllText(uplayMarker, "732");
+    var uplayIniPath = Path.Combine(uplayDirectory, "achiev.ini");
+    File.WriteAllText(uplayIniPath, "[UPLAY_EARNED]\nachieved=1\ntimestamp=1700000320\n[UPLAY_LOCKED]\nstate=0\n[42]\nstate=1\nUnlockTime=1700000330\n[UNKNOWN]\nstate=perhaps\n");
+    var iniPath2 = Path.Combine(iniDirectory, "achievements.ini");
+    File.WriteAllText(iniPath2, "[INI_EARNED]\nunlocked=true\n[INI_LOCKED]\nunlocked=false\n");
+    var malformedPath = Path.Combine(malformedDirectory, "achievements.json");
+    File.WriteAllText(malformedPath, "{not valid json");
+    var unidentifiedPath = Path.Combine(unidentifiedDirectory, "achievements.json");
+    File.WriteAllText(unidentifiedPath, "{\"ORPHAN\":{\"earned\":true}}");
+    var olderDuplicatePath = Path.Combine(olderDuplicateDirectory, "achievements.json");
+    var newerDuplicatePath = Path.Combine(newerDuplicateDirectory, "achievements.json");
+    File.WriteAllText(olderDuplicatePath, "{\"DUPLICATE\":{\"earned\":false,\"earned_time\":0}}");
+    File.WriteAllText(newerDuplicatePath, "{\"DUPLICATE\":{\"earned\":true,\"earned_time\":1700000340}}");
+    File.SetLastWriteTimeUtc(olderDuplicatePath, DateTime.UtcNow.AddMinutes(-20));
+    File.SetLastWriteTimeUtc(newerDuplicatePath, DateTime.UtcNow.AddMinutes(-10));
+    var newerDuplicateHash = SHA256.HashData(File.ReadAllBytes(newerDuplicatePath));
+    var gseHash = SHA256.HashData(File.ReadAllBytes(gsePath));
+    var databaseHash = SHA256.HashData(File.ReadAllBytes(scannerDbPath));
+    var uplayIniHash = SHA256.HashData(File.ReadAllBytes(uplayIniPath));
+    var supportedScan = await new AchievementScanner().ScanAsync(
+    [new ScanLocation("fixtures", "Synthetic format fixtures", formatsRoot, true, true, true)]);
+    Check(supportedScan.CandidateFiles == 8 && supportedScan.Locations.Single().FilesFound == 8,
+        "recursive scanner discovers supported profile files across synthetic nested folders");
+    Check(supportedScan.Games.Select(game => game.AppId).OrderBy(id => id).SequenceEqual(["730", "731", "732", "733", "735"]),
+        "scanner identifies AppIDs from folders, database filenames, and steam_appid.txt");
+    var gseGame = supportedScan.Games.Single(game => game.AppId == "730");
+    var dbGame = supportedScan.Games.Single(game => game.AppId == "731");
+    var uplayGame = supportedScan.Games.Single(game => game.AppId == "732");
+    var iniGame = supportedScan.Games.Single(game => game.AppId == "733");
+    Check(gseGame.UnlockedCount == 1 && gseGame.KnownStateCount == 2 && gseGame.TotalCount is null,
+        "Goldberg-style JSON scan preserves explicit states without claiming an unverified total");
+    Check(dbGame.UnlockedCount == 1 && dbGame.TotalCount == 2 && dbGame.CompletionPercent == 50,
+        "Achievement Watcher JSON .db scan reports correct unlocked count and completion");
+    Check(uplayGame.UnlockedCount == 2 && uplayGame.TotalCount is null && uplayGame.CompletionPercent is null,
+        "Uplay achiev.ini scan retains progress without inventing a complete catalog");
+    Check(iniGame.UnlockedCount == 1 && iniGame.TotalCount is null,
+        "achievements.ini scan finds its supported alternate filename");
+    Check(supportedScan.Issues.Count == 2
+        && supportedScan.Issues.Any(issue => issue.Contains("not valid JSON", StringComparison.OrdinalIgnoreCase))
+        && supportedScan.Issues.Any(issue => issue.Contains("Could not identify an AppID", StringComparison.OrdinalIgnoreCase)),
+        "malformed and unidentifiable profiles are diagnosed without aborting the scan");
+    Check(gseHash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(gsePath))),
+        "synthetic format scan leaves source achievement files unchanged");
+
+    var metadataRoot = Path.Combine(formatsRoot, "metadata");
+    var metadataCache = new LocalAchievementMetadataCache(metadataRoot);
+    var metadataWrite = await metadataCache.UpdateAsync(supportedScan.SourceFiles);
+    var gseCopy = Path.Combine(metadataRoot, "730", "achievements.json");
+    var databaseCopy = Path.Combine(metadataRoot, "731", "731.db");
+    var uplayConverted = Path.Combine(metadataRoot, "732", "achievements.json");
+    var duplicateCopy = Path.Combine(metadataRoot, "735", "achievements.json");
+    Check(metadataWrite.UpdatedFiles == 5 && File.Exists(gseCopy) && File.Exists(databaseCopy)
+        && File.Exists(uplayConverted) && File.Exists(duplicateCopy)
+        && !File.Exists(Path.Combine(metadataRoot, "734", "achievements.json")),
+        "native metadata cache copies supported JSON and database sources, converts INI, and skips malformed data");
+    Check(gseHash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(gseCopy)))
+        && databaseHash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(databaseCopy)))
+        && newerDuplicateHash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(duplicateCopy)))
+        && databaseHash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(scannerDbPath)))
+        && uplayIniHash.SequenceEqual(SHA256.HashData(File.ReadAllBytes(uplayIniPath))),
+        "metadata cache preserves JSON/database bytes and chooses the newest valid duplicate without modifying sources");
+    using (var convertedJson = JsonDocument.Parse(File.ReadAllText(uplayConverted)))
+    {
+        var convertedRoot = convertedJson.RootElement;
+        Check(convertedRoot.GetProperty("UPLAY_EARNED").GetProperty("earned").GetBoolean()
+            && convertedRoot.GetProperty("UPLAY_EARNED").GetProperty("earned_time").GetInt64() == 1700000320
+            && !convertedRoot.GetProperty("UPLAY_LOCKED").GetProperty("earned").GetBoolean()
+            && convertedRoot.GetProperty("42").GetProperty("earned").GetBoolean()
+            && convertedRoot.GetProperty("42").GetProperty("earned_time").GetInt64() == 1700000330
+            && !convertedRoot.TryGetProperty("UNKNOWN", out _),
+            "native INI conversion preserves exact states and timestamps and keeps numeric IDs unmapped");
+    }
+    Check(File.GetLastWriteTimeUtc(uplayConverted) == File.GetLastWriteTimeUtc(uplayIniPath)
+        && !Directory.EnumerateFiles(metadataRoot, "*.tmp-*", SearchOption.AllDirectories).Any(),
+        "atomic metadata writes preserve source timestamps and clean temporary files");
+    var repeatMetadataWrite = await metadataCache.UpdateAsync(supportedScan.SourceFiles);
+    Check(repeatMetadataWrite.UpdatedFiles == 0 && repeatMetadataWrite.UnchangedFiles == 5,
+        "metadata conversion is incremental and skips unchanged source files");
+    var scanWithGeneratedCache = await new AchievementScanner(metadataRoot).ScanAsync(
+    [
+        new ScanLocation("fixtures", "Synthetic format fixtures", formatsRoot, true, true, true),
+        new ScanLocation("nested", "Overlapping subfolder", Path.Combine(formatsRoot, "Goldberg"), true, true, true)
+    ]);
+    Check(scanWithGeneratedCache.CandidateFiles == supportedScan.CandidateFiles
+        && scanWithGeneratedCache.Games.Count == supportedScan.Games.Count,
+        "generated metadata and overlapping source paths are excluded from duplicate scanning");
+
+    var catalogSettings = new AppSettings();
+    catalogSettings.EnabledLocations["gse"] = false;
+    catalogSettings.CustomLocations.Add(new CustomLocationPreference
+    {
+        Id = "fixture",
+        Name = "Fixture folder",
+        Path = formatsRoot,
+        Enabled = true
+    });
+    var catalogLocations = LocationCatalog.Build(catalogSettings);
+    var requiredLocationIds = new[]
+    {
+        "steam-codex-public", "steam-rune-public", "onlinefix-public", "empress-public",
+        "goldberg-steam", "goldberg-uplay", "r1-uplay", "gse", "empress", "nemirtingas-epic",
+        "anadius-watcher", "steam-codex-appdata", "smartsteamemu", "skidrow", "universelan",
+        "steam-public-root", "empress-public-user-root"
+    };
+    Check(requiredLocationIds.All(id => catalogLocations.Any(location => location.Id == id))
+        && !catalogLocations.Single(location => location.Id == "gse").IsEnabled
+        && catalogLocations.Single(location => location.Id == "custom-fixture").IsCustom
+        && catalogLocations.Select(location => Path.GetFullPath(location.Path)).Distinct(StringComparer.OrdinalIgnoreCase).Count() == catalogLocations.Count,
+        "automatic location catalog includes requested roots, honors toggles, deduplicates roots, and retains custom folders");
+
+    var playtimeStatePath = Path.Combine(tempRoot, "playtime", "playtime.json");
+    var gameExecutableRoot = Path.Combine(tempRoot, "installed-games");
+    Directory.CreateDirectory(Path.Combine(gameExecutableRoot, "730"));
+    Directory.CreateDirectory(Path.Combine(gameExecutableRoot, "740"));
+    var gameExecutable = Path.Combine(gameExecutableRoot, "730", "game.exe");
+    var secondGameProcess = Path.Combine(gameExecutableRoot, "730", "game-helper.exe");
+    var otherGameExecutable = Path.Combine(gameExecutableRoot, "740", "other-game.exe");
+    File.WriteAllBytes(gameExecutable, [0]);
+    File.WriteAllBytes(secondGameProcess, [0]);
+    File.WriteAllBytes(otherGameExecutable, [0]);
+    var playtime = new GameplaySessionTracker(playtimeStatePath);
+    playtime.SetLibraryGames(["730"]);
+    Check(playtime.GetSnapshots(DateTimeOffset.UnixEpoch).Single().AppId == "730",
+        "playtime snapshots include discovered library games without existing tracking data");
+    Check(playtime.AddExecutable("730", gameExecutable)
+        && playtime.AddExecutable("730", secondGameProcess)
+        && !playtime.AddExecutable("740", gameExecutable),
+        "a library game can link multiple executables while one executable cannot be assigned to another game");
+    Check(!playtime.ObserveProcessStarted(new RunningProcessObservation(90, otherGameExecutable, DateTimeOffset.UnixEpoch), DateTimeOffset.UnixEpoch)
+        && !playtime.ObserveProcessStarted(new RunningProcessObservation(91, Path.Combine(gameExecutableRoot, "730", "unlinked.exe"), DateTimeOffset.UnixEpoch), DateTimeOffset.UnixEpoch),
+        "non-library and unassociated processes are ignored");
+
+    var sessionStart = new DateTimeOffset(2026, 11, 17, 10, 0, 0, TimeSpan.Zero);
+    Check(playtime.ObserveProcessStarted(new RunningProcessObservation(100, gameExecutable, sessionStart), sessionStart)
+        && playtime.ObserveProcessStarted(new RunningProcessObservation(101, secondGameProcess, sessionStart.AddSeconds(5)), sessionStart.AddSeconds(5))
+        && !playtime.ObserveProcessStarted(new RunningProcessObservation(100, gameExecutable, sessionStart), sessionStart.AddSeconds(6)),
+        "associated process start events create one game session and duplicate events are ignored");
+    Check(playtime.ObserveProcessStopped(100, sessionStart.AddSeconds(10))
+        && playtime.GetSnapshots(sessionStart.AddSeconds(15)).Single().ActiveProcessCount == 1
+        && playtime.ObserveProcessStopped(101, sessionStart.AddSeconds(20)),
+        "multiple processes keep one session active until the last associated process stops");
+    var overlapSnapshot = playtime.GetSnapshots(sessionStart.AddSeconds(20)).Single();
+    Check(overlapSnapshot.TotalPlaytime == TimeSpan.FromSeconds(20)
+        && overlapSnapshot.LastPlayedUtc == sessionStart.AddSeconds(20)
+        && !overlapSnapshot.IsRunning,
+        "overlapping game processes are counted once and the stopped session records its last-played time");
+
+    playtime.SetLibraryGames(["730", "740"]);
+    Check(playtime.AddExecutable("740", otherGameExecutable)
+        && playtime.ObserveProcessStarted(new RunningProcessObservation(200, gameExecutable, sessionStart.AddMinutes(1)), sessionStart.AddMinutes(1))
+        && playtime.ObserveProcessStarted(new RunningProcessObservation(201, otherGameExecutable, sessionStart.AddMinutes(1).AddSeconds(5)), sessionStart.AddMinutes(1).AddSeconds(5)),
+        "two different discovered games can be tracked at the same time");
+    Check(playtime.ObserveProcessStopped(200, sessionStart.AddMinutes(1).AddSeconds(15))
+        && playtime.ObserveProcessStopped(201, sessionStart.AddMinutes(1).AddSeconds(20))
+        && playtime.GetSnapshots(sessionStart.AddMinutes(1).AddSeconds(20)).ToDictionary(item => item.AppId)["730"].TotalPlaytime == TimeSpan.FromSeconds(35)
+        && playtime.GetSnapshots(sessionStart.AddMinutes(1).AddSeconds(20)).ToDictionary(item => item.AppId)["740"].TotalPlaytime == TimeSpan.FromSeconds(15),
+        "simultaneous games retain separate playtime totals");
+
+    var recoveryStatePath = Path.Combine(tempRoot, "recovery", "playtime.json");
+    var recoveryTracker = new GameplaySessionTracker(recoveryStatePath);
+    recoveryTracker.SetLibraryGames(["480"]);
+    var recoveryExecutable = Path.Combine(gameExecutableRoot, "730", "recovery.exe");
+    recoveryTracker.AddExecutable("480", recoveryExecutable);
+    var recoveryProcess = new RunningProcessObservation(301, recoveryExecutable, sessionStart);
+    recoveryTracker.ObserveProcessStarted(recoveryProcess, sessionStart);
+    recoveryTracker.Checkpoint(sessionStart.AddSeconds(60));
+    var resumedTracker = new GameplaySessionTracker(recoveryStatePath);
+    resumedTracker.SetLibraryGames(["480"]);
+    resumedTracker.RecoverAfterRestart([recoveryProcess], sessionStart.AddSeconds(120));
+    Check(resumedTracker.GetSnapshots(sessionStart.AddSeconds(120)).Single().TotalPlaytime == TimeSpan.FromSeconds(120)
+        && resumedTracker.GetSnapshots(sessionStart.AddSeconds(120)).Single().CurrentSessionStartedAtUtc == sessionStart,
+        "an active game process resumes its saved session after an application restart");
+    resumedTracker.ObserveProcessStopped(301, sessionStart.AddSeconds(150));
+    Check(resumedTracker.GetSnapshots(sessionStart.AddSeconds(150)).Single().TotalPlaytime == TimeSpan.FromSeconds(150),
+        "a recovered gameplay session closes without double-counting its saved checkpoint");
+
+    var interruptedPath = Path.Combine(tempRoot, "interrupted", "playtime.json");
+    var interruptedTracker = new GameplaySessionTracker(interruptedPath);
+    interruptedTracker.SetLibraryGames(["480"]);
+    interruptedTracker.AddExecutable("480", recoveryExecutable);
+    interruptedTracker.ObserveProcessStarted(recoveryProcess, sessionStart);
+    interruptedTracker.Checkpoint(sessionStart.AddSeconds(60));
+    var interruptedRecovery = new GameplaySessionTracker(interruptedPath);
+    interruptedRecovery.SetLibraryGames(["480"]);
+    interruptedRecovery.RecoverAfterRestart([], sessionStart.AddHours(2));
+    var interruptedSnapshot = interruptedRecovery.GetSnapshots(sessionStart.AddHours(2)).Single();
+    Check(interruptedSnapshot.TotalPlaytime == TimeSpan.FromSeconds(60)
+        && interruptedSnapshot.LastPlayedUtc == sessionStart.AddSeconds(60)
+        && !interruptedSnapshot.IsRunning,
+        "a game that stopped while AchievementSync was down ends at its last durable checkpoint");
+    Check(PlaytimeFormatter.Format(TimeSpan.FromMinutes(35)) == "35m"
+        && PlaytimeFormatter.Format(TimeSpan.FromHours(12) + TimeSpan.FromMinutes(35)) == "12h 35m"
+        && PlaytimeFormatter.Format(TimeSpan.FromDays(2) + TimeSpan.FromHours(3)) == "2d 3h",
+        "playtime uses compact minute, hour, and long-duration display formats");
+    var protectedProcessPath = ProcessObservationIdentity.UnverifiablePath("PBZ");
+    Check(protectedProcessPath.StartsWith("UnverifiableProcessName:", StringComparison.Ordinal)
+        && ProcessObservationIdentity.TryReadUnverifiableName(protectedProcessPath, out var protectedName)
+        && protectedName == "PBZ",
+        "a protected process carries a stable identity token round-tripping its process name");
+    var protectedTracker = new GameplaySessionTracker(Path.Combine(tempRoot, "protected-playtime", "playtime.json"));
+    protectedTracker.SetLibraryGames(["990"]);
+    protectedTracker.AddExecutable("990", Path.Combine(tempRoot, "linked", "PBZ.exe"));
+    protectedTracker.ObserveProcessStarted(new RunningProcessObservation(901, protectedProcessPath, sessionStart), sessionStart);
+    protectedTracker.ObserveProcessStarted(new RunningProcessObservation(902, protectedProcessPath, sessionStart.AddSeconds(1)), sessionStart.AddSeconds(1));
+    var protectedSnapshot = protectedTracker.GetSnapshots(sessionStart.AddSeconds(1)).Single();
+    Check(protectedSnapshot.IsRunning && protectedSnapshot.ActiveProcessCount == 2,
+        "a protected game whose path cannot be read is matched by process name against the linked executable");
+    protectedTracker.ObserveProcessStopped(901, sessionStart.AddMinutes(1));
+    protectedTracker.ObserveProcessStopped(902, sessionStart.AddMinutes(2));
+    var protectedFinal = protectedTracker.GetSnapshots(sessionStart.AddMinutes(2)).Single();
+    Check(!protectedFinal.IsRunning && protectedFinal.TotalPlaytime >= TimeSpan.FromMinutes(2) - TimeSpan.FromSeconds(2),
+        "the protected-process session is unioned and closes and saves when all processes stop");
+    Check(!protectedTracker.ObserveProcessStarted(new RunningProcessObservation(903, ProcessObservationIdentity.UnverifiablePath("OtherApp"), sessionStart), sessionStart),
+        "a protected process with no name match to any linked game is ignored");
+
+    var pauseStart = sessionStart.AddHours(1);
+    playtime.ObserveProcessStarted(new RunningProcessObservation(401, gameExecutable, pauseStart), pauseStart);
+    playtime.StopAllActiveSessions(pauseStart.AddSeconds(30));
+    var pauseSnapshot = playtime.GetSnapshots(pauseStart.AddMinutes(1)).Single(item => item.AppId == "730");
+    Check(pauseSnapshot.TotalPlaytime == TimeSpan.FromSeconds(65)
+        && !pauseSnapshot.IsRunning,
+        "pausing monitoring closes active gameplay sessions at the pause time");
+
+    var notificationStatePath = Path.Combine(tempRoot, "notification-state", "unlock-state.json");
+    var unlockTracker = new AchievementUnlockTracker(notificationStatePath);
+    var baselineProfile = new GameProfile("7654321", "Fixture game", [],
+    [
+        new AchievementRecord("LOCKED", "Previously locked", null, false, 0),
+        new AchievementRecord("ALREADY", "Previously earned", null, true, 1700000000),
+        new AchievementRecord("UNKNOWN", "Unverified state", null, null, null)
+    ], HasCompleteCatalog: false);
+    Check(unlockTracker.Observe(baselineProfile, "Fixture game").Count == 0,
+        "notification first-run baseline never reports already-unlocked achievements");
+    var newlyUnlockedProfile = baselineProfile with
+    {
+        Achievements =
+        [
+            new AchievementRecord("LOCKED", "Previously locked", null, true, 1800000000, "https://example.invalid/icon.png"),
+            new AchievementRecord("ALREADY", "Previously earned", null, true, 1700000000),
+            new AchievementRecord("UNKNOWN", "Unverified state", null, true, 1800000000),
+            new AchievementRecord("ADDED", "Newly discovered", null, true, 1800000000)
+        ]
+    };
+    var unlockEvents = unlockTracker.Observe(newlyUnlockedProfile, "Fixture game");
+    Check(unlockEvents.Count == 1 && unlockEvents[0].AchievementId == "LOCKED"
+        && unlockEvents[0].AchievementName == "Previously locked"
+        && unlockEvents[0].GameTitle == "Fixture game"
+        && unlockEvents[0].UnlockTimeUnix == 1800000000,
+        "only a confirmed known locked-to-unlocked transition creates a named notification");
+    Check(unlockTracker.Observe(newlyUnlockedProfile, "Fixture game").Count == 0,
+        "duplicate observations never create a second notification");
+    var restartedUnlockTracker = new AchievementUnlockTracker(notificationStatePath);
+    Check(restartedUnlockTracker.Observe(newlyUnlockedProfile, "Fixture game").Count == 0,
+        "a previously reported unlock remains deduplicated after an application restart");
+    var descriptionStatePath = Path.Combine(tempRoot, "description-unlock-state", "unlock-state.json");
+    var descriptionTracker = new AchievementUnlockTracker(descriptionStatePath);
+    var descriptionBaseline = new GameProfile("7651251", "Description Game", [],
+    [
+        new AchievementRecord("DESCRIPTION_CHECK", "Hidden title", "Hidden description text", false, 0)
+    ], HasCompleteCatalog: true);
+    descriptionTracker.Observe(descriptionBaseline, "Description Game");
+    var descriptionUnlocked = descriptionTracker.Observe(
+        descriptionBaseline with
+        {
+            Achievements =
+            [
+                new AchievementRecord("DESCRIPTION_CHECK", "Hidden title", "Hidden description text", true, 1800000000)
+            ]
+        }, "Description Game").Single();
+    Check(string.Equals(descriptionUnlocked.Description, "Hidden description text", StringComparison.Ordinal),
+        "a newly unlocked achievement carries its local description into the notification");
+    var unknownStatePath = Path.Combine(tempRoot, "unknown-notifications", "unlock-state.json");
+    var unknownTracker = new AchievementUnlockTracker(unknownStatePath);
+    unknownTracker.Observe(new GameProfile("7654322", null, [], [new AchievementRecord("UNKNOWN", null, null, null, null)], false));
+    Check(unknownTracker.Observe(new GameProfile("7654322", null, [], [new AchievementRecord("UNKNOWN", null, null, true, null)], false)).Count == 0,
+        "an unknown-to-unlocked state change does not produce a false positive");
+    Check(new AppSettings().AchievementNotificationsEnabled && !new AppSettings().StartWithWindows,
+        "new installs enable unlock notifications while Windows startup remains opt-in");
+    Check(new AppSettings().NotificationPosition == "TopCenter"
+        && new AppSettings().NotificationOffsetX == 0
+        && new AppSettings().NotificationOffsetY == 0
+        && new AppSettings().NotificationSoundEnabled
+        && new AppSettings().NotificationSoundVolume == 70
+        && !new AppSettings().AutoSyncAfterUnlock,
+        "notification defaults place the toast top-center, play a moderate chime, and keep GitHub auto-sync after unlock disabled");
+
+    var watcherRoot = Path.Combine(tempRoot, "watcher", "7654323");
+    Directory.CreateDirectory(watcherRoot);
+    var watchedAchievementPath = Path.Combine(watcherRoot, "achievements.json");
+    File.WriteAllText(watchedAchievementPath, "{\"WATCHED\":{\"earned\":false}}", new System.Text.UTF8Encoding(false));
+    var watcherScan = await new AchievementScanner().ScanAsync(
+        [new ScanLocation("fixture", "Synthetic watcher fixture", Path.GetDirectoryName(watcherRoot)!, true, true, true)]);
+    var watcherSource = watcherScan.SourceFiles.Single();
+    var watcherScanner = new AchievementScanner();
+    var watchedUnlockState = Path.Combine(tempRoot, "watcher-notification-state", "unlock-state.json");
+    var watchedUnlockTracker = new AchievementUnlockTracker(watchedUnlockState);
+    watchedUnlockTracker.Observe(watcherScan.Games.Single());
+    var changedSourceSignal = new TaskCompletionSource<IReadOnlyList<DiscoveredAchievementFile>>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using (var watcher = new LocalAchievementFileMonitor())
+    {
+        watcher.SourcesChanged += sources => changedSourceSignal.TrySetResult(sources);
+        watcher.Configure([watcherSource]);
+        var replacement = watchedAchievementPath + ".new";
+        File.WriteAllText(replacement, "{\"WATCHED\":{\"earned\":true}}", new System.Text.UTF8Encoding(false));
+        File.Move(replacement, watchedAchievementPath, overwrite: true);
+        var changedFiles = await changedSourceSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var changedProfiles = await watcherScanner.ParseKnownSourcesAsync(watcherScan.SourceFiles);
+        var watchedUnlocks = watchedUnlockTracker.Observe(changedProfiles.Single());
+        Check(changedFiles.Count == 1 && string.Equals(changedFiles[0].Path, watchedAchievementPath, StringComparison.OrdinalIgnoreCase)
+            && watchedUnlocks.Count == 1 && watchedUnlocks[0].AchievementId == "WATCHED",
+            "an atomically replaced discovered profile produces one parsed, confirmed locked-to-unlocked notification event");
+        watcher.SetPaused(true);
+        var pausedSignal = new TaskCompletionSource<IReadOnlyList<DiscoveredAchievementFile>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.SourcesChanged += sources => pausedSignal.TrySetResult(sources);
+        File.WriteAllText(watchedAchievementPath, "{\"WATCHED\":{\"earned\":false}}", new System.Text.UTF8Encoding(false));
+        await Task.Delay(1000);
+        Check(!pausedSignal.Task.IsCompleted, "paused local achievement monitoring does not dispatch file changes");
+        watcher.SetPaused(false);
+        await pausedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Check(true, "resuming local monitoring reconciles already-discovered profile files");
+        var overflowSignal = new TaskCompletionSource<IReadOnlyList<DiscoveredAchievementFile>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.SourcesChanged += sources => overflowSignal.TrySetResult(sources);
+        watcher.ReconcileKnownFiles();
+        var reconciledFiles = await overflowSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var reconciledProfiles = await watcherScanner.ParseKnownSourcesAsync(watcherScan.SourceFiles);
+        Check(reconciledFiles.Count == 1 && watchedUnlockTracker.Observe(reconciledProfiles.Single()).Count == 0,
+            "watcher overflow recovery reconciles known files without repeating a saved unlock notification");
+        var restartedWatchedUnlockTracker = new AchievementUnlockTracker(watchedUnlockState);
+        Check(restartedWatchedUnlockTracker.Observe(reconciledProfiles.Single()).Count == 0,
+            "a file event observed by the live watcher stays deduplicated after restart");
+    }
+
+    var monitorType = typeof(MainViewModel).Assembly.GetType("AchievementSync.Desktop.Services.WindowsGameProcessMonitor", throwOnError: true)!;
+    var queryBuilder = monitorType.GetMethod("BuildTraceQuery", BindingFlags.Static | BindingFlags.NonPublic)!;
+    var filteredStartQuery = (string)queryBuilder.Invoke(null, ["Win32_ProcessStartTrace", new[] { "game", "helper" }])!;
+    var filteredStopQuery = (string)queryBuilder.Invoke(null, ["Win32_ProcessStopTrace", new[] { "game" }])!;
+    Check(filteredStartQuery.Contains("ProcessName = \"game.exe\"", StringComparison.Ordinal)
+        && filteredStartQuery.Contains("ProcessName = \"helper.exe\"", StringComparison.Ordinal)
+        && !filteredStartQuery.Contains("Win32_Process WHERE", StringComparison.Ordinal)
+        && filteredStopQuery.Contains("Win32_ProcessStopTrace", StringComparison.Ordinal),
+        "WMI monitoring subscribes to filtered start/stop events for associated executable names only");
+    // Notification placement is UI-free geometry so positions can be checked exactly.
+    Check(NotificationPlacement.Presets.Count == 7 && NotificationPlacement.Presets[0].Code == "TopCenter"
+        && NotificationPlacement.Presets.All(item => !string.IsNullOrWhiteSpace(item.Label)),
+        "notification placement exposes the seven supported presets with TopCenter first");
+    var topCenter = NotificationPlacement.Compute("TopCenter", 460, 140, 0, 0, 0, 0, 1920, 1080);
+    Check(topCenter.Left == (1920 - 460) / 2 && topCenter.Top == 14,
+        "top-center preset centers the toast horizontally at the top of the work area");
+    Check(NotificationPlacement.Compute("center", 460, 140, 0, 0, 0, 0, 1920, 1080).Top == (1080 - 140) / 2
+        && NotificationPlacement.Compute("bottomright", 460, 140, 0, 0, 0, 0, 1920, 1080) is { Left: 1920 - 460 - 18, Top: 1080 - 140 - 18 },
+        "center and bottom-right presets anchor to the work area with the defined margins");
+    var clampedPlacement = NotificationPlacement.Compute("BottomLeft", 460, 140, 5000, -5000, 0, 0, 1920, 1080);
+    Check(clampedPlacement is { Left: 1920 - 460 - 8, Top: 8 },
+        "extreme offsets clamp the toast back inside the work area");
+    Check(!NotificationPlacement.IsKnownPreset("Sideways") && NotificationPlacement.IsKnownPreset("bottomleft"),
+        "unknown notification presets are rejected and preset matching ignores casing");
+
+    // A local Goldberg catalog with relative icon paths must resolve them to file URIs.
+    var localIconRoot = Path.Combine(tempRoot, "local-icon-catalog", "730", "steam_settings");
+    Directory.CreateDirectory(Path.Combine(localIconRoot, "img"));
+    await File.WriteAllBytesAsync(Path.Combine(localIconRoot, "img", "unlock.jpg"), pngBytes);
+    var localIconCatalog = Path.Combine(localIconRoot, "achievements.json");
+    await File.WriteAllTextAsync(localIconCatalog,
+        """[{"name":"ACH_LOCAL_ICON","hidden":0,"displayName":{"english":"Local Icon"},"description":{"english":"Icon resolves locally"},"icon":"img/unlock.jpg"}]""");
+    var localIconProfile = new JsonAchievementParser().Parse(localIconCatalog, "730");
+    Check(localIconProfile.Success && localIconProfile.Profile!.Achievements.Single().IconUri is { } resolvedIcon
+        && resolvedIcon.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+        && File.Exists(new Uri(resolvedIcon).LocalPath),
+        "a local Goldberg catalog resolves catalog-relative icon paths to local file URIs");
+    await File.WriteAllTextAsync(localIconCatalog,
+        """[{"name":"ACH_MISSING_ICON","hidden":0,"displayName":{"english":"Missing Icon"},"description":{"english":"No icon file exists"},"icon":"img/does-not-exist.jpg"}]""");
+    var missingIconProfile = new JsonAchievementParser().Parse(localIconCatalog, "730");
+    Check(missingIconProfile.Success && missingIconProfile.Profile!.Achievements.Single().IconUri is null,
+        "a local Goldberg catalog drops a catalog-relative icon path when the icon file is absent");
+
+    // The shared artwork cache decodes a local icon file through the common resolution path.
+    var cachedIcon = Path.Combine(tempRoot, "artwork-cache-test", "icon.png");
+    Directory.CreateDirectory(Path.GetDirectoryName(cachedIcon)!);
+    await File.WriteAllBytesAsync(cachedIcon, pngBytes);
+    var artworkCacheType = typeof(AchievementSync.Desktop.AchievementToastWindow).Assembly
+        .GetType("AchievementSync.Desktop.Services.AchievementArtworkCache", throwOnError: true)!;
+    var artworkCacheMethod = artworkCacheType.GetMethod("GetAsync", BindingFlags.Public | BindingFlags.Static)!;
+    var artworkCacheResult = await (Task<System.Windows.Media.Imaging.BitmapImage?>)artworkCacheMethod.Invoke(null, [new Uri(cachedIcon).ToString()])!;
+    Check(artworkCacheResult is not null && artworkCacheResult.PixelWidth > 0,
+        "the shared achievement-icon cache decodes a local file URI into a usable image");
+
+    // The metadata planner is the only source of files uploaded to GitHub; it must never include covers or other files.
+    var plannerRoot = Path.Combine(tempRoot, "metadata-planner");
+    Directory.CreateDirectory(Path.Combine(plannerRoot, "730"));
+    Directory.CreateDirectory(Path.Combine(plannerRoot, "733"));
+    Directory.CreateDirectory(Path.Combine(plannerRoot, "ViewerCatalog"));
+    Directory.CreateDirectory(Path.Combine(plannerRoot, "noachievements"));
+    await File.WriteAllBytesAsync(Path.Combine(plannerRoot, "730", "achievements.json"),
+        System.Text.Encoding.UTF8.GetBytes("""{"ACH_A":{"earned":true,"earned_time":1700000000},"ACH_B":{"earned":false,"earned_time":0}}"""));
+    File.WriteAllBytes(Path.Combine(plannerRoot, "730", "730.cover"), [0xFF, 0xD8, 0xFF]);
+    File.WriteAllBytes(Path.Combine(plannerRoot, "730", "steam.json"), "{}"u8.ToArray());
+    File.WriteAllBytes(Path.Combine(plannerRoot, "733", "steam.json"), "{}"u8.ToArray());
+    var metadataPlan = MetadataAchievementExportPlanner.Build(plannerRoot);
+    Check(metadataPlan.Files.Count == 1 && metadataPlan.Failures.Count == 0
+        && metadataPlan.Files[0].AppId == "730"
+        && metadataPlan.Files[0].RelativePath == "AppID/730/achievements.json"
+        && metadataPlan.Files[0].KnownStates == 2,
+        "the metadata planner exports only AppID-scoped achievements.json files, never covers or steam.json");
+    await File.WriteAllTextAsync(Path.Combine(plannerRoot, "730", "achievements.json"), "{not json");
+    var badMetadataPlan = MetadataAchievementExportPlanner.Build(plannerRoot);
+    Check(badMetadataPlan.Files.Count == 0 && badMetadataPlan.Failures.Count == 1 && badMetadataPlan.Failures[0].AppId == "730",
+        "an unreadable metadata achievements.json is reported as a per-AppID failure");
+    Check(MetadataAchievementExportPlanner.Build(Path.Combine(tempRoot, "metadata-missing")).Files.Count == 0,
+        "the metadata planner returns an empty list when the metadata directory does not exist");
+
+    // Bulk sync: one commit, only changed achievement files, per-AppID report. Covers and other files are never uploaded.
+    var bulkRemoteHead = "commit-old";
+    var bulkCalls = 0;
+    const string bulkRemoteAchievement = "{\"ACH_KEEP\":{\"earned\":true,\"earned_time\":1700000000}}";
+    using (var githubBulkHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (request.Method == HttpMethod.Get && path == "/repos/pozpo/viewer")
+            return Task.FromResult(JsonResponse("""{"full_name":"pozpo/viewer","default_branch":"user","private":false,"permissions":{"push":true}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/ref/heads/user", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse($"{{\"object\":{{\"sha\":\"{bulkRemoteHead}\"}}}}"));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/commits/commit-old", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree-old"}}"""));
+        if (request.Method == HttpMethod.Get && (path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal) || path.EndsWith("/contents/AppID/570/achievements.json", StringComparison.Ordinal)))
+            return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(bulkRemoteAchievement)) + "\"}"));
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/blobs", StringComparison.Ordinal))
+        { bulkCalls++; return Task.FromResult(JsonResponse("""{"sha":"blob-new"}""")); }
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/trees", StringComparison.Ordinal))
+        { bulkCalls++; return Task.FromResult(JsonResponse("""{"sha":"tree-new"}""")); }
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/commits", StringComparison.Ordinal))
+        { bulkCalls++; return Task.FromResult(JsonResponse("""{"sha":"commit-new"}""")); }
+        if (request.Method.Method == "PATCH" && path.EndsWith("/git/refs/heads/user", StringComparison.Ordinal))
+        { bulkCalls++; bulkRemoteHead = "commit-new"; return Task.FromResult(JsonResponse("""{"object":{"sha":"commit-new"}}""")); }
+        throw new InvalidOperationException($"Unexpected synthetic GitHub request: {request.Method} {path}");
+    })))
+    {
+        var bulkClient = new GitHubAchievementSyncClient(githubBulkHttp);
+        var bulkTarget = new GitHubSyncTarget("pozpo", "viewer", "user");
+        var changedFile = new AchievementExportFile("AppID/730/achievements.json", "730", 2,
+            """{"ACH_KEEP":{"earned":true,"earned_time":1700000000},"ACH_NEW":{"earned":true,"earned_time":1700000100}}""");
+        var unchangedFile = new AchievementExportFile("AppID/570/achievements.json", "570", 1, bulkRemoteAchievement);
+        var bulkResult = await bulkClient.PushBulkAsync("synthetic-token", bulkTarget, [changedFile, unchangedFile]);
+        Check(bulkResult.Pushed && bulkResult.AchievementFilesPushed == 1 && bulkResult.AchievementFilesUnchanged == 1
+            && bulkResult.Entries.Count == 2,
+            "bulk metadata sync pushes only changed achievement JSON in one commit, reporting each file and never uploading covers");
+        Check(bulkResult.CommitUrl is not null && bulkCalls == 4 && bulkResult.Entries.Count(entry => entry.Action == "pushed") == 1,
+            "bulk metadata sync returns a commit URL and per-AppID write results");
+    }
+
+    // INI roundtrip: viewer JSON can be converted back to INI and parsed again without losing states.
+    var iniJson = """{"SQUAD_HERO":{"earned":true,"earned_time":1700000100},"CLEAN_SWEEP":{"earned":false,"earned_time":0}}""";
+    var iniBytes = IniAchievementWriter.FromViewerJson(iniJson);
+    var iniText = System.Text.Encoding.UTF8.GetString(iniBytes);
+    Check(iniText.Contains("[SQUAD_HERO]") && iniText.Contains("unlocked=true") && iniText.Contains("earned_time=1700000100")
+        && iniText.Contains("unlocked=false"),
+        "INI writer emits unlocked flags and earned_time per section");
+    var roundtripRoot = Path.Combine(tempRoot, "roundtrip-ini");
+    Directory.CreateDirectory(roundtripRoot);
+    var roundtripPath = Path.Combine(roundtripRoot, "achievements.ini");
+    File.WriteAllBytes(roundtripPath, iniBytes);
+    var roundtrip = new IniAchievementParser().Parse(roundtripPath, "99000");
+    Check(roundtrip.Profile?.Achievements.Count == 2
+        && roundtrip.Profile!.Achievements.Any(a => a.ApiName == "SQUAD_HERO" && a.IsUnlocked == true && a.UnlockTimeUnix == 1700000100)
+        && roundtrip.Profile.Achievements.Any(a => a.ApiName == "CLEAN_SWEEP" && a.IsUnlocked == false),
+        "round-tripped INI is parsed back into the same states");
+
+    // Manifest serialize / deserialize roundtrips.
+    var manifest = RestorationManifest.Create("99000", "json", @"%USERPROFILE%\AppData\Local\AchievementSync\metadata\99000\achievements.json", "achievements.json",
+        [
+            new ManifestSaveEntry("GSE Saves", "save.dat", @"%USERPROFILE%\AppData\Roaming\GSE Saves\99000\save.dat", "AppID/99000/save/save.dat", 1234, "abcdef0123456789"),
+        ]);
+    var manifestJson = manifest.ToJson();
+    var restoredManifest = RestorationManifest.FromJson(manifestJson);
+    Check(restoredManifest is not null && restoredManifest!.AppId == "99000" && restoredManifest.Saves.Count == 1
+        && restoredManifest.Saves[0].RepoPath == "AppID/99000/save/save.dat" && restoredManifest.Saves[0].Sha256 == "abcdef0123456789",
+        "restoration manifest serializes and round-trips with correct path and hash");
+
+    // Path sanitizer rewrites the user-profile prefix with the most specific environment-variable token and leaves other paths untouched.
+    var realProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Roaming", "GSE Saves", "42", "achievements.json");
+    var sanitizedRound = PathSanitizer.Sanitize(realProfilePath);
+    Check((sanitizedRound.StartsWith("%APPDATA%", StringComparison.OrdinalIgnoreCase)
+              || sanitizedRound.StartsWith("%USERPROFILE%", StringComparison.OrdinalIgnoreCase))
+        && !sanitizedRound.Contains(Environment.UserName, StringComparison.Ordinal),
+        "path sanitizer rewrites user-profile prefix with an environment-variable token");
+    Check(PathSanitizer.Sanitize(@"D:\Games\Save\slot.sav") == @"D:\Games\Save\slot.sav",
+        "path sanitizer leaves non-profile drive paths untouched");
+    var realDesktopPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "notes.txt");
+    Check(PathSanitizer.Sanitize(realDesktopPath).Equals("%USERPROFILE%\\notes.txt", StringComparison.Ordinal),
+        "path sanitizer rewrites even the profile-root itself, not just known subfolders");
+    var roamingFull = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+    Check(PathSanitizer.Sanitize(Path.Combine(roamingFull, "GSE Saves", "730", "remote", "save.dat"))
+            .Equals("%APPDATA%\\GSE Saves\\730\\remote\\save.dat", StringComparison.Ordinal),
+        "path sanitizer prefers %APPDATA% over %USERPROFILE% for the Roaming subtree");
+
+    // Save backup planner: only save files + manifest (achievements data is synced separately).
+    var saveRoot = Path.Combine(tempRoot, "backup-planner-saves");
+    var saveFile = Path.Combine(saveRoot, "save.dat");
+    Directory.CreateDirectory(saveRoot);
+    File.WriteAllBytes(saveFile, [1, 2, 3]);
+    var plan = await SaveBackupPlanner.BuildAsync("730",
+        [
+            new DiscoveredSaveFile("730", "GSE Saves", "remote/save.dat", saveFile, 999, "a1b2c3d4", "AppID/730/save/remote/save.dat"),
+        ],
+        @"%USERPROFILE%\AppData\Local\AchievementSync\metadata\730\achievements.json", "json");
+    Check(plan.Items.Count == 1 && plan.Items[0].RepoPath == "AppID/730/save/remote/save.dat"
+        && plan.Manifest.AppId == "730" && plan.Manifest.Saves.Count == 1,
+        "backup planner packs only save files plus the manifest; achievements are synced separately");
+
+    // Save backup push: skips unchanged saves by SHA-256, merges achievements.json, reports per file.
+    var backupCalls = 0;
+    var backupRemoteJson = "{\"ACH_X\":{\"earned\":false,\"earned_time\":0}}";
+    using (var backupHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (request.Method == HttpMethod.Get && path == "/repos/pozpo/viewer")
+            return Task.FromResult(JsonResponse("""{"full_name":"pozpo/viewer","default_branch":"user","private":false,"permissions":{"push":true}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/ref/heads/user", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"object":{"sha":"commit-old"}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/commits/commit-old", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree-old"}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(backupRemoteJson)) + "\"}"));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/restoration-manifest.json", StringComparison.Ordinal))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/blobs", StringComparison.Ordinal))
+        { backupCalls++; return Task.FromResult(JsonResponse("""{"sha":"blob-new"}""")); }
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/trees", StringComparison.Ordinal))
+        { backupCalls++; return Task.FromResult(JsonResponse("""{"sha":"tree-new"}""")); }
+        if (request.Method == HttpMethod.Post && path.EndsWith("/git/commits", StringComparison.Ordinal))
+        { backupCalls++; return Task.FromResult(JsonResponse("""{"sha":"commit-new"}""")); }
+        if (request.Method.Method == "PATCH" && path.EndsWith("/git/refs/heads/user", StringComparison.Ordinal))
+        { backupCalls++; return Task.FromResult(JsonResponse("""{"object":{"sha":"commit-new"}}""")); }
+        throw new InvalidOperationException($"Unexpected synthetic GitHub request: {request.Method} {path}");
+    })))
+    {
+        var backupClient = new GitHubAchievementSyncClient(backupHttp);
+        var backupTarget = new GitHubSyncTarget("pozpo", "viewer", "user");
+        var backupPlan = new SaveBackupPlan("730",
+            [
+                new SaveBackupItem("730", "AppID/730/achievements.json", @"%USERPROFILE%\AppData\Local\AchievementSync\metadata\730\achievements.json",
+                    "dummy-sha-json", System.Text.Encoding.UTF8.GetBytes("""{"ACH_X":{"earned":true,"earned_time":1700000100}}""")),
+                new SaveBackupItem("730", "AppID/730/save/save.dat", @"%USERPROFILE%\AppData\Roaming\GSE Saves\730\remote\save.dat",
+                    "dummy-sha-save", new byte[0]),
+            ],
+            RestorationManifest.Create("730", "json", @"%USERPROFILE%\AppData\Local\AchievementSync\metadata\730\achievements.json", "achievements.json",
+                [new ManifestSaveEntry("GSE Saves", "remote/save.dat", @"%USERPROFILE%\AppData\Roaming\GSE Saves\730\remote\save.dat", "AppID/730/save/save.dat", 999, "a1b2c3d4")]));
+        var backupResult = await backupClient.PushSaveBackupAsync("synthetic-token", backupTarget, [backupPlan]);
+        Check(backupResult.Pushed && backupResult.FilesPushed >= 2 && backupCalls >= 4
+            && backupResult.Report.Any(line => line.Contains("achievements.json pushed")),
+            "save backup push uploads achievements.json merged with remote unlocks plus save files, reporting each file");
+    }
+
+    var itemWithSize = new SaveBackupItem("4115450", "AppID/4115450/save/real.sav", "C:\\nonexistent.sav", "sha", null, 12345);
+    Check(itemWithSize.SizeBytes == 12345, "SaveBackupItem preserves discovery file size in SizeBytes without reading disk");
+
+    var appSource = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "App.xaml.cs"));
+    Check(appSource.Contains("if (!StartInTray)", StringComparison.Ordinal) && appSource.Contains("mainWindow.InitializeAppAsync()", StringComparison.Ordinal),
+        "application startup does not show the main window when launched with --tray");
+
+    var vmSource = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "ViewModels", "MainViewModel.cs"));
+    Check(!vmSource.Contains("Enable automatic sync after every successful scan", StringComparison.Ordinal)
+        && vmSource.Contains("PushGitHubPreviewAsync(requireConfirmation: false)", StringComparison.Ordinal),
+        "automatic sync executes silently without pop-up confirmation messages");
+
+    Check(vmSource.Contains("if (_settings.AutoSyncAfterScan && newUnlockNotifications.Count > 0)", StringComparison.Ordinal),
+        "automatic sync on scan runs only when new achievements are unlocked");
+
+    var monitorSourcePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AchievementSync.Desktop", "Services", "WindowsGameProcessMonitor.cs");
+    var monitorSource = File.ReadAllText(Path.GetFullPath(monitorSourcePath));
+    Check(monitorSource.Contains("Process.GetProcessesByName(name)", StringComparison.Ordinal)
+        && monitorSource.Contains("process.MainModule?.FileName", StringComparison.Ordinal)
+        && !monitorSource.Contains("Process.GetProcesses()", StringComparison.Ordinal),
+        "process reconciliation is limited to linked executable names and verifies each full path");
+
+    var smokeTestHost = Path.Combine(AppContext.BaseDirectory, "AchievementSync.SmokeTests.exe");
+    var probeRoot = Path.Combine(tempRoot, "wmi-process-probe");
+    Directory.CreateDirectory(probeRoot);
+    foreach (var source in Directory.EnumerateFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories))
+    {
+        var relative = Path.GetRelativePath(AppContext.BaseDirectory, source);
+        var destination = Path.Combine(probeRoot, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        File.Copy(source, destination, overwrite: true);
+    }
+    var probeExecutable = Path.Combine(probeRoot, "tracker-probe.exe");
+    if (File.Exists(smokeTestHost)) File.Copy(smokeTestHost, probeExecutable, overwrite: true);
+    var integrationStatePath = Path.Combine(tempRoot, "wmi-integration", "playtime.json");
+    var integrationTracker = new GameplaySessionTracker(integrationStatePath);
+    integrationTracker.SetLibraryGames(["900001"]);
+    integrationTracker.AddExecutable("900001", probeExecutable);
+    var monitorConstructor = monitorType.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Single();
+    var monitor = monitorConstructor.Invoke([integrationTracker, TimeSpan.FromMilliseconds(250)]);
+    var monitorStart = (Task)monitorType.GetMethod("StartAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+        .Invoke(monitor, null)!;
+    await monitorStart;
+    try
+    {
+        Check(File.Exists(probeExecutable), "a temporary smoke-test process fixture is ready for native WMI verification");
+        using var probeProcess = Process.Start(new ProcessStartInfo(probeExecutable, "--playtime-wmi-fixture")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        }) ?? throw new InvalidOperationException("The temporary gameplay process fixture could not be started.");
+        await probeProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        await Task.Delay(500);
+    }
+    finally
+    {
+        await ((IAsyncDisposable)monitor).DisposeAsync();
+    }
+    var wmiObservedGame = integrationTracker.GetSnapshots(DateTimeOffset.UtcNow).Single();
+    Check(wmiObservedGame.TotalPlaytime >= TimeSpan.FromSeconds(2)
+        && !wmiObservedGame.IsRunning
+        && wmiObservedGame.LastPlayedUtc.HasValue,
+        "the native process monitor records a temporary associated process through filtered WMI events or its targeted fallback");
 
     if (args.Contains("--live-github-sync", StringComparer.OrdinalIgnoreCase))
     {
@@ -360,6 +1670,24 @@ void Check(bool condition, string description)
     if (!condition) throw new InvalidOperationException("FAIL: " + description);
     checks++;
     Console.WriteLine("PASS: " + description);
+}
+
+bool TryGetJsonProperty(JsonElement element, string name, out JsonElement value)
+{
+    if (element.ValueKind == JsonValueKind.Object)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+    }
+
+    value = default;
+    return false;
 }
 
 HttpResponseMessage JsonResponse(string content) => new(HttpStatusCode.OK)

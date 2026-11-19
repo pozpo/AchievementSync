@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Text.Json;
 using AchievementSync.Core.Models;
 
@@ -25,28 +26,42 @@ public sealed class JsonAchievementParser : IAchievementParser
     {
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
+            var json = File.ReadAllText(path);
+            if (string.Equals(Path.GetFileName(path), "game-info.json", StringComparison.OrdinalIgnoreCase))
+            {
+                return ParseViewerGameInfo(json, appId, path);
+            }
+
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions
             {
                 AllowTrailingCommas = true,
                 CommentHandling = JsonCommentHandling.Skip,
                 MaxDepth = 64
             });
 
-            var isViewerGameInfo = string.Equals(Path.GetFileName(path), "game-info.json", StringComparison.OrdinalIgnoreCase);
-            var title = isViewerGameInfo ? ReadString(document.RootElement, "name") : null;
             var entries = document.RootElement.ValueKind switch
             {
-                JsonValueKind.Object when isViewerGameInfo && TryGetProperty(document.RootElement, "achievements", out var catalog)
-                    => ReadSchemaObject(catalog),
-                JsonValueKind.Object => ReadObject(document.RootElement),
-                JsonValueKind.Array => ReadArray(document.RootElement),
+                JsonValueKind.Object => ReadObject(document.RootElement, path),
+                JsonValueKind.Array => ReadArray(document.RootElement, path),
                 _ => new List<AchievementRecord>()
             };
 
-            if (entries.Count == 0)
+            if (entries.Count == 0
+                && !(document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.EnumerateObject().Count() == 0
+                    && string.Equals(Path.GetFileName(path), "achievements.json", StringComparison.OrdinalIgnoreCase)))
             {
                 return ParseResult.Unsupported("The JSON file does not contain recognizable unlock-state fields.");
             }
+
+            var hasOnlyExplicitStates = entries.Count > 0 && entries.All(item => item.IsUnlocked.HasValue);
+            var isDatabaseSnapshot = string.Equals(Path.GetExtension(path), ".db", StringComparison.OrdinalIgnoreCase);
+            var completeCatalog = entries.Count > 0 &&
+                ((hasOnlyExplicitStates && isDatabaseSnapshot)
+                    || entries.All(item => !string.IsNullOrWhiteSpace(item.DisplayName)
+                        || !string.IsNullOrWhiteSpace(item.Description)
+                        || !string.IsNullOrWhiteSpace(item.IconUri)
+                        || item.IsHidden));
 
             var fileTime = new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
             return ParseResult.Parsed(new ParsedProfile(
@@ -55,8 +70,7 @@ public sealed class JsonAchievementParser : IAchievementParser
                 path,
                 fileTime,
                 entries,
-                HasCompleteCatalog: true,
-                Title: title));
+                HasCompleteCatalog: completeCatalog));
         }
         catch (JsonException)
         {
@@ -72,7 +86,79 @@ public sealed class JsonAchievementParser : IAchievementParser
         }
     }
 
-    private static List<AchievementRecord> ReadSchemaObject(JsonElement root)
+    public static ParseResult ParseViewerGameInfo(string json, string appId, string filePath = "game-info.json")
+    {
+        if (!IsAppId(appId)) return ParseResult.Unsupported("The AppID is missing or invalid.");
+
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !TryGetProperty(document.RootElement, "achievements", out var catalog)
+                || catalog.ValueKind != JsonValueKind.Object)
+            {
+                return ParseResult.Unsupported("Viewer game metadata does not contain an achievement catalog.");
+            }
+
+            if (TryGetProperty(document.RootElement, "appid", out var fileAppId)
+                && fileAppId.ValueKind == JsonValueKind.String
+                && !string.Equals(fileAppId.GetString(), appId, StringComparison.Ordinal))
+            {
+                return ParseResult.Unsupported("Viewer game metadata belongs to a different AppID.");
+            }
+
+            var entries = ReadSchemaObject(catalog, filePath);
+            var title = ReadString(document.RootElement, "name");
+            return ParseResult.Parsed(new ParsedProfile(
+                appId,
+                "Achievement Viewer game-info catalog",
+                filePath,
+                DateTimeOffset.UtcNow,
+                entries,
+                HasCompleteCatalog: true,
+                Title: title));
+        }
+        catch (JsonException)
+        {
+            return ParseResult.Unsupported("Viewer game metadata is not valid JSON.");
+        }
+    }
+
+    /// <summary>Parses the public viewer's per-game progress file. Missing catalog entries are locked by viewer contract.</summary>
+    public static ParseResult ParseViewerAchievementProgress(string json, string appId, string filePath)
+    {
+        if (!IsAppId(appId)) return ParseResult.Unsupported("The AppID is missing or invalid.");
+
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return ParseResult.Unsupported("Viewer achievement progress must be a JSON object keyed by achievement identifier.");
+            }
+
+            var entries = ReadObject(document.RootElement);
+            if (entries.Count == 0 && document.RootElement.EnumerateObject().Any())
+            {
+                return ParseResult.Unsupported("Viewer achievement progress does not contain recognizable state fields.");
+            }
+
+            return ParseResult.Parsed(new ParsedProfile(
+                appId,
+                "Achievement Viewer public progress",
+                filePath,
+                DateTimeOffset.UtcNow,
+                entries,
+                HasCompleteCatalog: false,
+                UnlistedAchievementsAreLocked: true));
+        }
+        catch (JsonException)
+        {
+            return ParseResult.Unsupported("Viewer achievement progress is not valid JSON.");
+        }
+    }
+
+    private static List<AchievementRecord> ReadSchemaObject(JsonElement root, string? path = null)
     {
         var entries = new List<AchievementRecord>();
         if (root.ValueKind != JsonValueKind.Object) return entries;
@@ -81,8 +167,8 @@ public sealed class JsonAchievementParser : IAchievementParser
         {
             if (property.Value.ValueKind != JsonValueKind.Object) continue;
             var item = property.Value;
-            var icon = ReadString(item, "icon");
-            if (string.IsNullOrWhiteSpace(icon)) icon = ReadString(item, "icongray") ?? ReadString(item, "icon_gray");
+            var icon = ResolveIconUri(ReadString(item, "icon"), path);
+            if (string.IsNullOrWhiteSpace(icon)) icon = ResolveIconUri(ReadString(item, "icongray") ?? ReadString(item, "icon_gray"), path);
             var displayName = ReadString(item, "displayName") ?? ReadString(item, "name");
             var description = ReadString(item, "description");
             var hidden = ReadBoolean(item, "hidden") ?? false;
@@ -105,7 +191,7 @@ public sealed class JsonAchievementParser : IAchievementParser
         return entries;
     }
 
-    private static List<AchievementRecord> ReadObject(JsonElement root)
+    private static List<AchievementRecord> ReadObject(JsonElement root, string? path = null)
     {
         var entries = new List<AchievementRecord>();
         foreach (var property in root.EnumerateObject())
@@ -123,7 +209,7 @@ public sealed class JsonAchievementParser : IAchievementParser
 
             var displayName = ReadString(value, "displayName") ?? ReadString(value, "name");
             var description = ReadString(value, "description");
-            var icon = ReadString(value, "icon");
+            var icon = ResolveIconUri(ReadString(value, "icon"), path);
             var hidden = ReadBoolean(value, "hidden") ?? false;
             if (!unlock.HasValue && string.IsNullOrWhiteSpace(displayName)
                 && string.IsNullOrWhiteSpace(description) && string.IsNullOrWhiteSpace(icon) && !hidden)
@@ -149,7 +235,7 @@ public sealed class JsonAchievementParser : IAchievementParser
         return entries;
     }
 
-    private static List<AchievementRecord> ReadArray(JsonElement root)
+    private static List<AchievementRecord> ReadArray(JsonElement root, string? path = null)
     {
         var entries = new List<AchievementRecord>();
         foreach (var item in root.EnumerateArray())
@@ -166,7 +252,7 @@ public sealed class JsonAchievementParser : IAchievementParser
 
             var displayName = ReadLocalizedString(item, "displayName") ?? ReadString(item, "display_name");
             var description = ReadLocalizedString(item, "description");
-            var icon = ReadString(item, "icon") ?? ReadString(item, "icon_gray");
+            var icon = ResolveIconUri(ReadString(item, "icon") ?? ReadString(item, "icon_gray"), path);
             var hidden = ReadBoolean(item, "hidden") ?? false;
             if (string.IsNullOrWhiteSpace(apiName) || (!unlock.HasValue
                 && string.IsNullOrWhiteSpace(displayName) && string.IsNullOrWhiteSpace(description)
@@ -281,5 +367,36 @@ public sealed class JsonAchievementParser : IAchievementParser
 
         value = default;
         return false;
+    }
+
+    private static bool IsAppId(string value) =>
+        value.Length is >= 1 and <= 10 && value.All(char.IsAsciiDigit) && value.Any(character => character != '0');
+
+    /// <summary>
+    /// Brings achievement icon references found in local Goldberg catalogs to a usable URI.
+    /// Absolute http(s)/file URIs are kept as-is. Rooted paths and catalog-relative paths are
+    /// turned into file URIs only when the referenced file actually exists.
+    /// </summary>
+    private static string? ResolveIconUri(string? icon, string? catalogPath)
+    {
+        if (string.IsNullOrWhiteSpace(icon)) return null;
+        var trimmed = icon.Trim();
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute) && absolute.Scheme is "http" or "https" or "file")
+            return absolute.ToString();
+
+        var candidatePath = Path.IsPathRooted(trimmed)
+            ? trimmed
+            : catalogPath is not null && Path.IsPathRooted(catalogPath)
+                ? Path.GetFullPath(Path.Combine(Path.GetDirectoryName(catalogPath)!, trimmed))
+                : null;
+        if (candidatePath is null) return null;
+        try
+        {
+            return File.Exists(candidatePath) ? new Uri(candidatePath, UriKind.Absolute).ToString() : null;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException or System.Security.SecurityException)
+        {
+            return null;
+        }
     }
 }

@@ -70,8 +70,8 @@ public static class AchievementJsonMerge
                 if (string.IsNullOrWhiteSpace(property.Name) || property.Name.Contains('/') || property.Name.Contains('\\'))
                     throw new InvalidDataException($"The {source} achievement JSON contains an invalid achievement ID.");
                 if (property.Value.ValueKind != JsonValueKind.Object
-                    || !property.Value.TryGetProperty("earned", out var earned)
-                    || earned.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    || !property.Value.TryGetProperty("earned", out var earnedElement)
+                    || !TryGetEarned(earnedElement, out var earned))
                     throw new InvalidDataException($"Achievement '{property.Name}' in the {source} JSON has no valid earned state.");
 
                 long timestamp = 0;
@@ -81,7 +81,7 @@ public static class AchievementJsonMerge
                         throw new InvalidDataException($"Achievement '{property.Name}' in the {source} JSON has an invalid earned_time.");
                 }
 
-                if (!result.TryAdd(property.Name, new State(earned.GetBoolean(), timestamp)))
+                if (!result.TryAdd(property.Name, new State(earned, timestamp)))
                     throw new InvalidDataException($"The {source} JSON contains duplicate achievement IDs ignoring case.");
             }
             return result;
@@ -90,6 +90,26 @@ public static class AchievementJsonMerge
         {
             throw new InvalidDataException($"The {source} achievement JSON is invalid and was not changed.", exception);
         }
+    }
+
+    private static bool TryGetEarned(JsonElement element, out bool value)
+    {
+        if (element.ValueKind is JsonValueKind.True) { value = true; return true; }
+        if (element.ValueKind is JsonValueKind.False) { value = false; return true; }
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var number))
+        {
+            value = number != 0;
+            return true;
+        }
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var text = element.GetString()?.Trim();
+            if (bool.TryParse(text, out var parsed)) { value = parsed; return true; }
+            if (string.Equals(text, "1", StringComparison.Ordinal)) { value = true; return true; }
+            if (string.Equals(text, "0", StringComparison.Ordinal)) { value = false; return true; }
+        }
+        value = false;
+        return false;
     }
 
     private static long ValidTimestamp(long? value) => value is > 0 and <= 253402300799 ? value.Value : 0;

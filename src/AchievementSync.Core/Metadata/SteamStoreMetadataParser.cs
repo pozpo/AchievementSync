@@ -30,9 +30,23 @@ public static class SteamStoreMetadataParser
                 headerImage = uri;
             }
 
-            return string.IsNullOrWhiteSpace(name) && headerImage is null
+            // The public Store listing states how many achievements the app defines, hidden ones included.
+            // It is not an achievement catalog: it supplies no per-achievement state, so it only completes
+            // a profile whose local records already cover every listed achievement.
+            int? achievementsTotal = null;
+            if (TryProperty(data, "achievements", out var achievementsElement)
+                && achievementsElement.ValueKind == JsonValueKind.Object
+                && TryProperty(achievementsElement, "total", out var totalElement)
+                && totalElement.ValueKind == JsonValueKind.Number
+                && totalElement.TryGetInt32(out var totalValue)
+                && totalValue > 0)
+            {
+                achievementsTotal = totalValue;
+            }
+
+            return string.IsNullOrWhiteSpace(name) && headerImage is null && achievementsTotal is null
                 ? null
-                : new SteamGameMetadata(appId, name, headerImage);
+                : new SteamGameMetadata(appId, name, headerImage, achievementsTotal);
         }
         catch (JsonException)
         {

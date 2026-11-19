@@ -7,4 +7,5 @@ public sealed record ParsedProfile(
     DateTimeOffset LastWriteTimeUtc,
     IReadOnlyList<AchievementRecord> Achievements,
     bool HasCompleteCatalog,
-    string? Title = null);
+    string? Title = null,
+    bool UnlistedAchievementsAreLocked = false);

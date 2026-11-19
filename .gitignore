@@ -6,6 +6,8 @@
 /dist/
 /output/*
 !/output/.gitkeep
+# Live verification screenshots can contain personal game-library details.
+/verification/
 *.user
 *.suo
 *.log

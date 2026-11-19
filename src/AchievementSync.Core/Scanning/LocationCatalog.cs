@@ -9,9 +9,11 @@ public static class LocationCatalog
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var commonDocuments = Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments);
+        var publicProfile = Path.GetDirectoryName(commonDocuments) ?? commonDocuments;
         var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
         var definitions = new (string Id, string Name, string Path)[]
         {
+            ("steam-public-root", "Steam (Public Documents root)", Path.Combine(commonDocuments, "Steam")),
             ("steam-codex-public", "Steam CODEX (Public Documents)", Path.Combine(commonDocuments, "Steam", "CODEX")),
             ("steam-rune-public", "Steam RUNE (Public Documents)", Path.Combine(commonDocuments, "Steam", "RUNE")),
             ("onlinefix-public", "OnlineFix (Public Documents)", Path.Combine(commonDocuments, "OnlineFix")),
@@ -31,6 +33,7 @@ public static class LocationCatalog
             ("achievement-watcher-user", "Achievement Watcher user cache", Path.Combine(appData, "Achievement Watcher", "steam_cache", "user")),
             ("creamapi", "CreamAPI", Path.Combine(appData, "CreamAPI")),
             ("empress-public-root", "EMPRESS (Public Documents root)", Path.Combine(commonDocuments, "EMPRESS")),
+            ("empress-public-user-root", "EMPRESS (Public profile)", Path.Combine(publicProfile, "EMPRESS")),
             ("programdata-steam", "Steam (ProgramData)", Path.Combine(programData, "steam"))
         };
 

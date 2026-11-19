@@ -6,23 +6,36 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using Brush = System.Windows.Media.Brush;
+using Button = System.Windows.Controls.Button;
+using Color = System.Windows.Media.Color;
 using System.Windows.Media.Imaging;
+using System.Windows.Interop;
 using AchievementSync.Core.Models;
-using Microsoft.VisualBasic;
+using AchievementSync.Desktop.Services;
+using AchievementSync.Desktop.ViewModels;
 
 namespace AchievementSync.Desktop;
 
 public partial class GameDetailsWindow : Window
 {
     private readonly ICollectionView _view;
+    private readonly GameCardViewModel _game;
     private string _filter = "All";
 
-    public GameDetailsWindow(GameProfile profile, string title, BitmapImage? artwork)
+    public GameDetailsWindow(GameCardViewModel game)
     {
+        _game = game ?? throw new ArgumentNullException(nameof(game));
+        var profile = game.Profile;
         InitializeComponent();
-        GameTitle.Text = title;
-        HeroArtwork.Source = artwork;
-        AppIdText.Text = $"Steam AppID {profile.AppId}  ·  {profile.SourceFiles.Count} local profile file(s)";
+        SourceInitialized += (_, _) => WindowAppearance.Apply(new WindowInteropHelper(this).Handle);
+        GameTitle.Text = game.Title;
+        HeroArtwork.Source = game.Artwork;
+        var viewerProgressIncluded = profile.SourceFiles.Any(source => source.StartsWith("viewer://", StringComparison.OrdinalIgnoreCase));
+        var localSourceCount = profile.SourceFiles.Count(source => !source.StartsWith("viewer://", StringComparison.OrdinalIgnoreCase));
+        AppIdText.Text = viewerProgressIncluded
+            ? $"Steam AppID {profile.AppId}  ·  {localSourceCount} local profile file(s) + public viewer data"
+            : $"Steam AppID {profile.AppId}  ·  {localSourceCount} local profile file(s)";
         var known = profile.Achievements.Where(item => item.IsUnlocked.HasValue).ToArray();
         var unlocked = known.Count(item => item.IsUnlocked == true);
         var locked = known.Length - unlocked;
@@ -32,12 +45,20 @@ public partial class GameDetailsWindow : Window
         var unknown = profile.Achievements.Count(item => item.IsUnlocked is null);
         CatalogNote.Text = profile.HasCompleteCatalog
             ? $"{profile.Achievements.Count:N0} achievements in the catalog · {unknown:N0} unlock state(s) unknown"
-            : $"{known.Length:N0} known entries · this source does not prove the full game catalog";
+            : $"{unlocked:N0} unlocked · {known.Length:N0} known states · total achievement catalog unavailable";
+        if (viewerProgressIncluded)
+        {
+            CatalogNote.Text += " · includes saved progress from the configured public Achievement Viewer";
+        }
 
         var rows = new ObservableCollection<AchievementRow>(profile.Achievements.Select(item => new AchievementRow(item)));
         _view = CollectionViewSource.GetDefaultView(rows);
         _view.Filter = FilterAchievement;
         AchievementList.ItemsSource = _view;
+        UpdateAchievementEmptyState();
+        UpdatePlaytimeText();
+        _game.PropertyChanged += Game_PropertyChanged;
+        Closed += (_, _) => _game.PropertyChanged -= Game_PropertyChanged;
     }
 
     private bool FilterAchievement(object item)
@@ -56,25 +77,53 @@ public partial class GameDetailsWindow : Window
         {
             _filter = filter;
             _view.Refresh();
+            UpdateAchievementEmptyState();
         }
     }
 
     private void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
         _view?.Refresh();
+        UpdateAchievementEmptyState();
     }
 
-    public event Action<string?>? ManualNameSubmitted;
+    private void UpdateAchievementEmptyState() =>
+        AchievementEmptyState.Visibility = GetAchievementEmptyStateVisibility(AchievementList.Items.Count);
 
-    private void IdentifyGame_Click(object sender, RoutedEventArgs e)
+    internal static Visibility GetAchievementEmptyStateVisibility(int visibleAchievementCount) =>
+        visibleAchievementCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public event Action<string?>? ManualNameSubmitted;
+    public event Action<GameCardViewModel>? ExecutableAssociationRequested;
+
+    private void Game_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        var title = Interaction.InputBox(
-            "Enter a display name for this AppID. The name is saved on this PC.",
-            "Identify game",
-            GameTitle.Text);
-        if (string.IsNullOrWhiteSpace(title)) return;
-        GameTitle.Text = title.Trim();
-        ManualNameSubmitted?.Invoke(title.Trim());
+        if (e.PropertyName == nameof(GameCardViewModel.Title)) GameTitle.Text = _game.Title;
+        if (e.PropertyName is nameof(GameCardViewModel.PlaytimeText)
+            or nameof(GameCardViewModel.LastPlayedText)
+            or nameof(GameCardViewModel.CurrentSessionText)
+            or nameof(GameCardViewModel.ExecutableAssociationText))
+        {
+            UpdatePlaytimeText();
+        }
+    }
+
+    private void UpdatePlaytimeText()
+    {
+        PlaytimeText.Text = _game.PlaytimeText;
+        LastPlayedText.Text = _game.LastPlayedText;
+        CurrentSessionText.Text = _game.CurrentSessionText;
+        ExecutableInfo.Text = _game.ExecutableAssociationText;
+    }
+
+    private void LinkExecutable_Click(object sender, RoutedEventArgs e) => ExecutableAssociationRequested?.Invoke(_game);
+
+    private void EditGameName_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new GameNameDialog(GameTitle.Text) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        GameTitle.Text = dialog.GameName;
+        ManualNameSubmitted?.Invoke(dialog.GameName);
     }
 }
 
@@ -122,25 +171,34 @@ internal sealed class AchievementRow
 
     private static BitmapImage? CreateIconImage(string? iconUri)
     {
-        if (!Uri.TryCreate(iconUri, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps
-            || !(uri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(uri.Host, "steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase)))
-        {
-            return null;
-        }
+        if (string.IsNullOrWhiteSpace(iconUri)) return null;
+        if (!Uri.TryCreate(iconUri, UriKind.Absolute, out var uri)) return null;
+
+        var isLocal = uri.Scheme == Uri.UriSchemeFile;
+        var isSteamHost = uri.Scheme == Uri.UriSchemeHttps
+            && (uri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uri.Host, "steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase));
+        if (!isLocal && !isSteamHost) return null;
 
         try
         {
             var image = new BitmapImage();
             image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnDemand;
-            image.UriSource = uri;
+            if (isLocal)
+            {
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = new MemoryStream(File.ReadAllBytes(uri.LocalPath), writable: false);
+            }
+            else
+            {
+                image.CacheOption = BitmapCacheOption.OnDemand;
+                image.UriSource = uri;
+            }
             image.EndInit();
-            image.Freeze();
+            if (image.CanFreeze) image.Freeze();
             return image;
         }
-        catch (Exception exception) when (exception is IOException or UriFormatException or NotSupportedException)
+        catch (Exception exception) when (exception is IOException or UriFormatException or NotSupportedException or UnauthorizedAccessException)
         {
             return null;
         }

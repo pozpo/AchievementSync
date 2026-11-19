@@ -5,9 +5,12 @@ public sealed record GameProfile(
     string? Title,
     IReadOnlyList<string> SourceFiles,
     IReadOnlyList<AchievementRecord> Achievements,
-    bool HasCompleteCatalog)
+    bool HasCompleteCatalog,
+    bool UnlistedAchievementsAreLocked = false)
 {
     public int UnlockedCount => Achievements.Count(item => item.IsUnlocked == true);
+
+    public int KnownStateCount => Achievements.Count(item => item.IsUnlocked.HasValue);
 
     public int? TotalCount => HasCompleteCatalog ? Achievements.Count : null;
 

@@ -7,4 +7,5 @@ public sealed record ScanResult(
     IReadOnlyList<GameProfile> Games,
     IReadOnlyList<ScanLocation> Locations,
     IReadOnlyList<string> Issues,
-    int CandidateFiles);
+    int CandidateFiles,
+    IReadOnlyList<DiscoveredAchievementFile> SourceFiles);

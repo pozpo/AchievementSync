@@ -45,11 +45,14 @@ $publishArguments = @(
     "--runtime", $Runtime,
     "--self-contained", "true",
     "--output", $stagePath,
-    "-p:PublishSingleFile=true",
-    "-p:IncludeNativeLibrariesForSelfExtract=true",
-    "-p:EnableCompressionInSingleFile=true",
+    "-p:PublishSingleFile=false",
+    "-p:IncludeNativeLibrariesForSelfExtract=false",
+    "-p:EnableCompressionInSingleFile=false",
     "-p:DebugType=None",
-    "-p:DebugSymbols=false"
+    "-p:DebugSymbols=false",
+    "-p:PublishReadyToRun=true",
+    "-p:TieredCompilation=true",
+    "-p:TieredPGO=true"
 )
 if (-not [string]::IsNullOrWhiteSpace($GitHubOAuthClientId)) {
     $publishArguments += "-p:AchievementSyncGitHubClientId=$GitHubOAuthClientId"

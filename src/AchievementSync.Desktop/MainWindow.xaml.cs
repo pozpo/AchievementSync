@@ -35,6 +35,7 @@ internal static class NativeMethods
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
+    internal MainViewModel ViewModel => _viewModel;
     private WindowsGameProcessMonitor? _processMonitor;
     private LocalAchievementFileMonitor? _achievementFileMonitor;
     private AchievementTrayIcon? _trayIcon;

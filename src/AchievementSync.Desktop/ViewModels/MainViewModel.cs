@@ -21,7 +21,7 @@ using MessageBox = System.Windows.MessageBox;
 
 namespace AchievementSync.Desktop.ViewModels;
 
-public sealed class MainViewModel : INotifyPropertyChanged
+public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly AchievementScanner _scanner = new();
     private readonly LocalAchievementMetadataCache _localMetadataCache = new();
@@ -1775,6 +1775,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (bytes < 1024 * 1024) return $"{bytes / 1024.0:0.0} KB";
         if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):0.0} MB";
         return $"{bytes / (1024.0 * 1024 * 1024):0.0} GB";
+    }
+
+    public void Dispose()
+    {
+        _viewerCatalogHttp.Dispose();
+        _githubHttpClient.Dispose();
+        _metadataSlots.Dispose();
+        _viewerDataSlots.Dispose();
+        _changedSourceGate.Dispose();
+        GC.SuppressFinalize(this);
     }
 }
 

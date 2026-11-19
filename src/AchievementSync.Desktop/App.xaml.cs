@@ -38,6 +38,15 @@ public partial class App : Application
         }
     }
 
+    protected override void OnExit(ExitEventArgs e)
+    {
+        if (MainWindow is MainWindow mainWindow && mainWindow.ViewModel is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+        base.OnExit(e);
+    }
+
     private void ScrollViewer_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
     {
         if (sender is not System.Windows.Controls.ScrollViewer scrollViewer) return;

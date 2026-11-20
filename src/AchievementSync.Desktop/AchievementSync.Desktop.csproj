@@ -24,6 +24,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>..\..\assets\AchievementSync.ico</ApplicationIcon>
     <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">$(ACHIEVEMENTSYNC_GITHUB_CLIENT_ID)</AchievementSyncGitHubClientId>
+    <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">Ov23liJMW4F1dg3IaWAd</AchievementSyncGitHubClientId>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(AchievementSyncGitHubClientId)' != ''">

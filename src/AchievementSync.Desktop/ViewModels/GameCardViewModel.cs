@@ -236,6 +236,7 @@ public sealed class GameCardViewModel(GameProfile profile) : INotifyPropertyChan
                 var image = new BitmapImage();
                 image.BeginInit();
                 image.CacheOption = BitmapCacheOption.OnLoad;
+                image.DecodePixelWidth = 460;
                 image.UriSource = new Uri(metadata.ArtworkPath, UriKind.Absolute);
                 image.EndInit();
                 image.Freeze();

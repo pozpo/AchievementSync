@@ -62,7 +62,13 @@ public static class ProfileMerger
             game.Title,
             game.UnlistedAchievementsAreLocked);
         var enriched = Merge([existing, catalog]).Single();
-        return enriched with { SourceFiles = game.SourceFiles };
+        var localCatalogIcons = catalog.Achievements
+            .Where(item => !string.IsNullOrWhiteSpace(item.IconUri)
+                && Uri.TryCreate(item.IconUri, UriKind.Absolute, out var uri) && uri.IsFile)
+            .ToDictionary(item => item.ApiName, item => item.IconUri!, StringComparer.OrdinalIgnoreCase);
+        var achievements = enriched.Achievements.Select(item =>
+            localCatalogIcons.TryGetValue(item.ApiName, out var icon) ? item with { IconUri = icon } : item).ToArray();
+        return enriched with { SourceFiles = game.SourceFiles, Achievements = achievements };
     }
 
     private static AchievementRecord MergeAchievement(

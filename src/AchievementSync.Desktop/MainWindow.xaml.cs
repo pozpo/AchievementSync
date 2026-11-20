@@ -104,6 +104,25 @@ public partial class MainWindow : Window
 
     private void OnProcessTrackingConfigurationChanged(object? sender, EventArgs e) => _processMonitor?.RefreshAssociations();
 
+    private void SavePlatformCredentials_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.SavePlatformCredentials(RetroAchievementsApiKeyBox.Password);
+        RetroAchievementsApiKeyBox.Clear();
+    }
+
+    private async void ConnectGitHubWithToken_Click(object sender, RoutedEventArgs e)
+    {
+        var token = GitHubTokenBox.Password;
+        GitHubTokenBox.Clear();
+        await _viewModel.ConnectGitHubWithTokenAsync(token);
+    }
+
+    private void ClearPlatformCredentials_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.ClearPlatformCredentials();
+        RetroAchievementsApiKeyBox.Clear();
+    }
+
     private void OnWatchSourcesChanged(object? sender, IReadOnlyList<AchievementSync.Core.Scanning.DiscoveredAchievementFile> sources) =>
         _achievementFileMonitor?.Configure(sources);
 

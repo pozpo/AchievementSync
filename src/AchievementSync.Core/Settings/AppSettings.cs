@@ -1,5 +1,7 @@
 namespace AchievementSync.Core.Settings;
 
+using System.Text.Json.Serialization;
+
 public sealed class AppSettings
 {
     public Dictionary<string, bool> EnabledLocations { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -16,16 +18,28 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; }
     public bool HasAuthorizedFirstUpload { get; set; }
 
-    // Notification presentation and behaviour. Old settings files keep working: these
-    // properties carry defaults and the store ignores keys it does not recognize.
+    // Notification presentation and behaviour.
     public string NotificationPosition { get; set; } = "TopCenter";
     public int NotificationOffsetX { get; set; }
     public int NotificationOffsetY { get; set; }
     public bool NotificationSoundEnabled { get; set; } = true;
-    public int NotificationSoundVolume { get; set; } = 70; // 0..100
-    public string NotificationSoundKind { get; set; } = "AchievementSync"; // AchievementSync | SoftTick | VictoryArpeggio | Custom
-    public string NotificationSoundPath { get; set; } = string.Empty; // custom .wav file chosen by the user
+    public int NotificationSoundVolume { get; set; } = 70;
+    public string NotificationSoundKind { get; set; } = "AchievementSync";
+    public string NotificationSoundPath { get; set; } = string.Empty;
     public bool AutoSyncAfterUnlock { get; set; }
+
+    // Platform source folders (environment-tokenised paths are accepted).
+    public Dictionary<string, string> PlatformSourceRoots { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // Platform login secrets are held in Windows Credential Manager. Keep only the RA account name here.
+    public string RetroAchievementsUser { get; set; } = string.Empty;
+    [JsonPropertyName("RetroAchievementsApiKey")]
+    public string LegacyRetroAchievementsApiKey { get; set; } = string.Empty;
+    [JsonPropertyName("EpicAccessToken")]
+    public string LegacyEpicAccessToken { get; set; } = string.Empty;
+    [JsonPropertyName("GogAccessToken")]
+    public string LegacyGogAccessToken { get; set; } = string.Empty;
+    // Achievement Enabler adapter archive root.
+    public string EnablerAdaptersRoot { get; set; } = string.Empty;
 }
 
 public sealed class CustomLocationPreference

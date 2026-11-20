@@ -12,9 +12,12 @@ using System.Text.Json;
 using AchievementSync.Core.Models;
 using AchievementSync.Core.Metadata;
 using AchievementSync.Core.Scanning;
+using AchievementSync.Core.Scanning.PlatformAdapters;
 using AchievementSync.Core.Settings;
 using AchievementSync.Core.Synchronization;
 using AchievementSync.Core.Tracking;
+using AchievementSync.Core.Platforms;
+using AchievementSync.Core.Enabler;
 using AchievementSync.Desktop.Services;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
@@ -24,7 +27,9 @@ namespace AchievementSync.Desktop.ViewModels;
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly AchievementScanner _scanner = new();
-    private readonly LocalAchievementMetadataCache _localMetadataCache = new();
+    private readonly LocalAchievementMetadataCache _localMetadataCache;
+    private readonly LocalAchievementCatalogCache _localCatalogCache;
+    private readonly PlatformAdapterRegistry _platformAdapters = new();
     private readonly SteamMetadataCache _metadataCache;
     private readonly SemaphoreSlim _metadataSlots = new(5, 5);
     private readonly SemaphoreSlim _viewerDataSlots = new(4, 4);
@@ -36,6 +41,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly GitHubDeviceFlowClient _githubDeviceFlow;
     private readonly GitHubAchievementSyncClient _githubSyncClient;
     private readonly WindowsCredentialTokenStore _githubTokenStore = new();
+    private readonly WindowsCredentialTokenStore _retroAchievementsKeyStore = new("AchievementSync/Platforms/RetroAchievementsApiKey");
     private readonly GameplaySessionTracker _gameplayTracker;
     private readonly AchievementUnlockTracker _unlockTracker;
     private readonly IStartupRegistration _startupRegistration;
@@ -59,7 +65,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _measurableGamesText = "0 games with measurable progress";
     private int _completedGames;
     private string _issueText = string.Empty;
-    private string _previewStatus = "Build a local preview of the viewer-compatible files.";
+    private string _previewStatus = "Connect GitHub, then build a preview. Nothing has been uploaded.";
     private ExportPreviewFileViewModel? _selectedExport;
     private string _githubStatus = string.Empty;
     private bool _isGitHubSignedIn;
@@ -88,6 +94,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private RelayCommand? _browseNotificationSoundCommand;
     private System.Windows.Media.Imaging.BitmapImage? _githubAvatarImage;
 
+    // Platforms
+    private readonly PlatformScanService _platformScanService = new();
+    private readonly AchievementEnablerService _enablerService;
+    private PlatformSourceOptions _platformSourceOptions = PlatformSourceOptions.CreateDefault();
+    private bool _isPlatformScanRunning;
+    private string _platformScanStatus = "Platform scan not started.";
+    private IReadOnlyList<PlatformRunStatus> _platformStatuses = [];
+    private string _platformCredentialStatus = "No platform API credentials saved.";
+    private static readonly (string Key, string Label)[] PlatformRootDefinitions =
+    [
+        ("steam", "Steam"), ("xblen", "XBLessness"), ("xboxpc", "Xbox PC"),
+        ("xbox360", "Xenia / Xbox 360"), ("gfwl", "GFWL"), ("rpcs3", "RPCS3 / PS3"),
+        ("ps4", "shadPS4"), ("ps5", "Kyty PS5"), ("epic", "Epic Games Store"),
+        ("gog", "GOG Galaxy"), ("uplay", "Ubisoft Connect")
+    ];
+
     public MainViewModel() : this(null, null, readStoredCredential: true, enableDiagnostics: true)
     {
     }
@@ -103,6 +125,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _enableDiagnostics = enableDiagnostics;
         _settings = settings ?? _settingsStore.Load();
+        MigrateLegacyPlatformCredentials();
+        _platformSourceOptions = BuildPlatformSourceOptions();
+        _enablerService = new AchievementEnablerService(
+            string.IsNullOrWhiteSpace(_settings.EnablerAdaptersRoot) ? null : _settings.EnablerAdaptersRoot,
+            MetadataRoot);
         _gameplayTracker = gameplayTracker ?? new GameplaySessionTracker();
         _unlockTracker = unlockTracker ?? new AchievementUnlockTracker();
         _startupRegistration = startupRegistration ?? new WindowsStartupRegistration();
@@ -116,6 +143,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (_unlockTracker.StorageIssue is { } unlockStorageIssue && _enableDiagnostics)
             AppLog.Warning($"Achievement notification history could not be loaded and will be kept untouched: {unlockStorageIssue}.");
         _metadataCache = metadataCache ?? new SteamMetadataCache();
+        _localMetadataCache = new LocalAchievementMetadataCache(null, _platformAdapters);
+        _localCatalogCache = new LocalAchievementCatalogCache(MetadataRoot, _settings.EnablerAdaptersRoot);
+
+        _platformAdapters.Register(new SteamDataAdapter(_platformSourceOptions));
+
+        // Register platform data adapters for the dedicated Platforms page
+        _platformScanService.Register(new SteamDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new XboxDataAdapter("xbox", "Xbox / Xbox PC (XBLessness)", includeGfwl: false));
+        _platformScanService.Register(new GfwlDataAdapter());
+        _platformScanService.Register(new Xbox360DataAdapter());
+        _platformScanService.Register(new PlayStationDataAdapter());
+        _platformScanService.Register(new GogDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new EpicDataAdapter(_platformSourceOptions, _viewerCatalogHttp));
+        _platformScanService.Register(new UplayDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new RetroAchievementsDataAdapter(_viewerCatalogHttp));
+
+        PlatformStatuses = _platformScanService.Adapters.Select(adapter =>
+        {
+            var configured = adapter.IsConfiguredFor(_platformSourceOptions);
+            return new PlatformRunStatus(adapter.Platform, adapter.DisplayName, configured, adapter.ConfigurationHint,
+                0, configured ? "Ready to scan" : "Not configured");
+        }).ToArray();
+
+        PlatformSourceEntries = new ObservableCollection<PlatformSourceRootViewModel>(
+            PlatformRootDefinitions.Select(definition => new PlatformSourceRootViewModel(
+                definition.Key, definition.Label, GetPlatformRoot(_platformSourceOptions, definition.Key), UpdatePlatformSourceRoot)));
+        UpdatePlatformCredentialStatus();
+
         _viewerGameInfoClient = new ViewerGameInfoClient(_viewerCatalogHttp);
         _viewerProgressClient = new ViewerAchievementProgressClient(_viewerCatalogHttp);
         _githubDeviceFlow = new GitHubDeviceFlowClient(_githubHttpClient);
@@ -130,6 +185,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RemoveLocationCommand = new RelayCommand(parameter => RemoveLocation(parameter as LocationOptionViewModel));
         SignInToGitHubCommand = new AsyncCommand(SignInToGitHubAsync, () => CanStartGitHubSignIn);
         DisconnectGitHubCommand = new RelayCommand(_ => DisconnectGitHub());
+        BuildGitHubPreviewCommand = new AsyncCommand(BuildGitHubPreviewAsync, () => CanBuildGitHubPreview);
         PushGitHubPreviewCommand = new AsyncCommand(() => PushGitHubPreviewAsync(), () => CanPushGitHubPreview);
         TestNotificationCommand = new RelayCommand(_ => TestNotificationRequested?.Invoke(this, EventArgs.Empty));
         PreviewNotificationSoundCommand = new RelayCommand(_ => UnlockSoundPlayer.TryPlay(true, _settings.NotificationSoundVolume, _settings.NotificationSoundKind, _settings.NotificationSoundPath));
@@ -137,6 +193,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         BackupSavesCommand = new AsyncCommand(BackupSavesAsync, () => CanBackup);
         RestoreSavesCommand = new AsyncCommand(RestoreSavesAsync, () => CanRestore);
         ClearBulkSyncReportCommand = new RelayCommand(_ => ClearBulkSyncReport());
+        OpenEnablerWizardCommand = new RelayCommand(_ => OpenEnablerWizard());
         OpenGameCommand = new RelayCommand(parameter =>
         {
             if (parameter is GameCardViewModel game)
@@ -156,8 +213,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _githubStatus = _isGitHubSignedIn
             ? $"Connected as {_settings.GitHubLogin}. Preview changes before every push."
             : !HasGitHubOAuthClientId
-                ? "GitHub sign-in is waiting for the publisher's OAuth App Client ID."
+                ? "OAuth sign-in is not configured in this build. Connect with a classic token that has public_repo access."
                 : "Connect your GitHub account and select your public achievement-viewer repository.";
+        RefreshAutoSyncStatus();
         RefreshGitHubAvatar();
         if (_isGitHubSignedIn && (string.IsNullOrWhiteSpace(_settings.GitHubDisplayName) || string.IsNullOrWhiteSpace(_settings.GitHubAvatarUrl)))
             _ = RefreshGitHubAccountDetailsAsync();
@@ -215,6 +273,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public ICommand RemoveLocationCommand { get; }
     public ICommand SignInToGitHubCommand { get; }
     public ICommand DisconnectGitHubCommand { get; }
+    public ICommand BuildGitHubPreviewCommand { get; }
     public ICommand PushGitHubPreviewCommand { get; }
     public ICommand OpenGameCommand { get; }
     public ICommand TestNotificationCommand { get; }
@@ -233,9 +292,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool HasBackupReport => BackupResults.Count > 0;
     public bool HasRestoreReport => RestoreResults.Count > 0;
     public bool HasBulkSyncReport => BulkSyncResults.Count > 0;
-    public bool CanSyncAll => IsGitHubSignedIn && !_isSyncAllRunning;
-    public bool CanBackup => IsGitHubSignedIn && !_isBackupRunning;
-    public bool CanRestore => IsGitHubSignedIn && !_isRestoreRunning;
+
+    private void RefreshAutoSyncStatus()
+    {
+        if (!AutoSyncAfterScan && !AutoSyncAfterUnlock)
+            AutoSyncStatus = "Automatic sync is off.";
+        else if (!IsGitHubSignedIn)
+            AutoSyncStatus = "Automatic sync is saved, but GitHub must be connected before it can run.";
+        else if (AutoSyncAfterScan && !_settings.HasAuthorizedFirstUpload)
+            AutoSyncStatus = "After-scan sync is on. The first upload will ask you to review and confirm it.";
+        else if (AutoSyncAfterScan)
+            AutoSyncStatus = "After-scan sync is on. Later uploads run after each completed scan.";
+        else
+            AutoSyncStatus = "New-unlock sync is on. It pushes AppID files after a genuine unlock.";
+    }
+
+    public bool CanSyncAll => IsGitHubSignedIn && !_isSyncAllRunning && !_isBackupRunning && !_isRestoreRunning && !_isPushRunning && !_isPushPreviewRunning;
+    public bool CanBackup => IsGitHubSignedIn && !_isBackupRunning && !_isRestoreRunning && !_isSyncAllRunning && !_isPushRunning && !_isPushPreviewRunning;
+    public bool CanRestore => IsGitHubSignedIn && !_isRestoreRunning && !_isBackupRunning && !_isSyncAllRunning && !_isPushRunning && !_isPushPreviewRunning;
     public GameplaySessionTracker GameplayTracker => _gameplayTracker;
     public IReadOnlyList<DiscoveredAchievementFile> WatchableSourceFiles => _sourceFiles;
 
@@ -260,7 +334,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string ScanStatus { get => _scanStatus; private set => Set(ref _scanStatus, value); }
     public string LastScanText { get => _lastScanText; private set => Set(ref _lastScanText, value); }
-    public string CurrentPage { get => _currentPage; private set { if (Set(ref _currentPage, value)) { OnPropertyChanged(nameof(IsGamesVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(IsActivityVisible)); } } }
+    public string CurrentPage { get => _currentPage; private set { if (Set(ref _currentPage, value)) { OnPropertyChanged(nameof(IsGamesVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(IsActivityVisible)); OnPropertyChanged(nameof(IsPlatformsVisible)); } } }
     public bool IsScanning { get => _isScanning; private set { if (Set(ref _isScanning, value)) CommandManager.InvalidateRequerySuggested(); } }
     public bool IsGamesVisible => CurrentPage == "Games";
     public bool IsSettingsVisible => CurrentPage == "Settings";
@@ -398,15 +472,49 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (_settings.AutoSyncAfterUnlock == value) return;
             _settings.AutoSyncAfterUnlock = value;
-            AutoSyncStatus = value
-                ? "Auto-sync is on — pushes AppID files only after genuine unlocks."
-                : "Auto-sync is off. Enable it to push AppID files on genuine unlocks only.";
             SaveSettings();
             OnPropertyChanged();
             OnPropertyChanged(nameof(AutoSyncStatusVisibility));
+            RefreshAutoSyncStatus();
         }
     }
-    public Visibility AutoSyncStatusVisibility => AutoSyncAfterUnlock ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility AutoSyncStatusVisibility => AutoSyncAfterScan || AutoSyncAfterUnlock ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool IsPlatformsVisible => CurrentPage == "Platforms";
+
+    public PlatformSourceOptions PlatformSourceOptions
+    {
+        get => _platformSourceOptions;
+        private set
+        {
+            if (Set(ref _platformSourceOptions, value))
+            {
+                OnPropertyChanged(nameof(PlatformSourceOptions));
+            }
+        }
+    }
+
+    public ObservableCollection<PlatformSourceRootViewModel> PlatformSourceEntries { get; }
+    public string PlatformCredentialStatus { get => _platformCredentialStatus; private set => Set(ref _platformCredentialStatus, value); }
+    public string RetroAchievementsUser
+    {
+        get => _settings.RetroAchievementsUser;
+        set
+        {
+            var normalized = value?.Trim() ?? string.Empty;
+            if (string.Equals(_settings.RetroAchievementsUser, normalized, StringComparison.Ordinal)) return;
+            _settings.RetroAchievementsUser = normalized;
+            SaveSettings();
+            OnPropertyChanged();
+        }
+    }
+
+    public string PlatformScanStatus { get => _platformScanStatus; private set => Set(ref _platformScanStatus, value); }
+    public bool IsPlatformScanRunning { get => _isPlatformScanRunning; private set { if (Set(ref _isPlatformScanRunning, value)) CommandManager.InvalidateRequerySuggested(); } }
+    public IReadOnlyList<PlatformRunStatus> PlatformStatuses { get => _platformStatuses; private set => Set(ref _platformStatuses, value); }
+
+    public ICommand OpenEnablerWizardCommand { get; }
+
     public bool StartWithWindows
     {
         get => _settings.StartWithWindows;
@@ -432,14 +540,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     public string StartupStatus { get => _startupStatus; private set => Set(ref _startupStatus, value); }
     public bool HasGitHubOAuthClientId => !string.IsNullOrWhiteSpace(GitHubOAuthConfiguration.ClientId);
-    public bool IsGitHubSignedIn { get => _isGitHubSignedIn; private set { if (Set(ref _isGitHubSignedIn, value)) { OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(GitHubAccountText)); OnPropertyChanged(nameof(GitHubLogin)); OnPropertyChanged(nameof(GitHubDisplayName)); OnPropertyChanged(nameof(GitHubAccountVisibility)); OnPropertyChanged(nameof(GitHubAccountHasAvatar)); CommandManager.InvalidateRequerySuggested(); } } }
+    public bool IsGitHubSignedIn { get => _isGitHubSignedIn; private set { if (Set(ref _isGitHubSignedIn, value)) { OnPropertyChanged(nameof(CanStartGitHubSignIn)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(GitHubAccountText)); OnPropertyChanged(nameof(GitHubLogin)); OnPropertyChanged(nameof(GitHubDisplayName)); OnPropertyChanged(nameof(GitHubAccountVisibility)); OnPropertyChanged(nameof(GitHubAccountHasAvatar)); OnPropertyChanged(nameof(AutoSyncStatusVisibility)); RefreshAutoSyncStatus(); CommandManager.InvalidateRequerySuggested(); } } }
 
-    public bool IsSignInRunning { get => _isSignInRunning; private set { if (Set(ref _isSignInRunning, value)) OnPropertyChanged(nameof(CanStartGitHubSignIn)); } }
+    public bool IsSignInRunning { get => _isSignInRunning; private set { if (Set(ref _isSignInRunning, value)) { OnPropertyChanged(nameof(CanStartGitHubSignIn)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanPushGitHubPreview)); CommandManager.InvalidateRequerySuggested(); } } }
     public bool IsPushPreviewRunning { get => _isPushPreviewRunning; private set { if (Set(ref _isPushPreviewRunning, value)) { OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanPushGitHubPreview)); OnPropertyChanged(nameof(CanStartGitHubSignIn)); CommandManager.InvalidateRequerySuggested(); } } }
-    public bool IsPushRunning { get => _isPushRunning; private set { if (Set(ref _isPushRunning, value)) { OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanPushGitHubPreview)); CommandManager.InvalidateRequerySuggested(); } } }
-    public bool IsSyncAllRunning { get => _isSyncAllRunning; private set { if (Set(ref _isSyncAllRunning, value)) { OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanRestore)); CommandManager.InvalidateRequerySuggested(); } } }
-    public bool IsBackupRunning { get => _isBackupRunning; private set { if (Set(ref _isBackupRunning, value)) { OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(IsBackupRunningReport)); CommandManager.InvalidateRequerySuggested(); } } }
-    public bool IsRestoreRunning { get => _isRestoreRunning; private set { if (Set(ref _isRestoreRunning, value)) { OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); CommandManager.InvalidateRequerySuggested(); } } }
+    public bool IsPushRunning { get => _isPushRunning; private set { if (Set(ref _isPushRunning, value)) { OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanPushGitHubPreview)); CommandManager.InvalidateRequerySuggested(); } } }
+    public bool IsSyncAllRunning { get => _isSyncAllRunning; private set { if (Set(ref _isSyncAllRunning, value)) { OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanPushGitHubPreview)); CommandManager.InvalidateRequerySuggested(); } } }
+    public bool IsBackupRunning { get => _isBackupRunning; private set { if (Set(ref _isBackupRunning, value)) { OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanPushGitHubPreview)); OnPropertyChanged(nameof(IsBackupRunningReport)); CommandManager.InvalidateRequerySuggested(); } } }
+    public bool IsRestoreRunning { get => _isRestoreRunning; private set { if (Set(ref _isRestoreRunning, value)) { OnPropertyChanged(nameof(CanRestore)); OnPropertyChanged(nameof(CanSyncAll)); OnPropertyChanged(nameof(CanBackup)); OnPropertyChanged(nameof(CanBuildGitHubPreview)); OnPropertyChanged(nameof(CanPushGitHubPreview)); CommandManager.InvalidateRequerySuggested(); } } }
 
     public bool IsBackupRunningReport => _isBackupRunning;
     public string BackupStage { get => _backupStage; private set => Set(ref _backupStage, value); }
@@ -458,9 +566,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     public double BackupRemainingBytesText => 0; // placeholder no-op for backward compat if bound
 
-    public bool CanStartGitHubSignIn => HasGitHubOAuthClientId && !_isSignInRunning;
-    public bool CanBuildGitHubPreview => IsGitHubSignedIn && !_isSignInRunning && !_isPushPreviewRunning && !string.IsNullOrWhiteSpace(GitHubOwner) && !string.IsNullOrWhiteSpace(GitHubRepository) && !string.IsNullOrWhiteSpace(GitHubBranch);
-    public bool CanPushGitHubPreview => _githubPreview is { Changes.Count: > 0 } && IsGitHubSignedIn && !_isPushRunning && !_isPushPreviewRunning;
+    public bool CanStartGitHubSignIn => HasGitHubOAuthClientId && !_isSignInRunning && !IsGitHubSignedIn;
+    public bool CanBuildGitHubPreview => IsGitHubSignedIn && !_isSignInRunning && !_isPushPreviewRunning && !_isPushRunning && !_isSyncAllRunning && !_isBackupRunning && !_isRestoreRunning && !string.IsNullOrWhiteSpace(GitHubOwner) && !string.IsNullOrWhiteSpace(GitHubRepository) && !string.IsNullOrWhiteSpace(GitHubBranch);
+    public bool CanPushGitHubPreview => _githubPreview is { Changes.Count: > 0 } && IsGitHubSignedIn && !_isPushRunning && !_isPushPreviewRunning && !_isSyncAllRunning && !_isBackupRunning && !_isRestoreRunning;
     public string GitHubStatus { get => _githubStatus; private set => Set(ref _githubStatus, value); }
     public string GitHubAccountText => IsGitHubSignedIn ? $"Connected as {_settings.GitHubLogin}" : "GitHub account not connected";
     public string GitHubLogin => IsGitHubSignedIn ? _settings.GitHubLogin : string.Empty;
@@ -501,17 +609,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             if (_settings.AutoSyncAfterScan == value) return;
-            if (value && (!IsGitHubSignedIn || string.IsNullOrWhiteSpace(GitHubOwner)
-                || !string.Equals(GitHubOwner, _settings.GitHubLogin, StringComparison.OrdinalIgnoreCase)
-                || string.IsNullOrWhiteSpace(GitHubRepository) || string.IsNullOrWhiteSpace(GitHubBranch)))
-            {
-                OnPropertyChanged();
-                return;
-            }
             _settings.AutoSyncAfterScan = value;
-            _settings.HasAuthorizedFirstUpload = true;
             SaveSettings();
             OnPropertyChanged();
+            OnPropertyChanged(nameof(AutoSyncStatusVisibility));
+            RefreshAutoSyncStatus();
         }
     }
     public bool IsLibraryEmpty { get => _isLibraryEmpty; private set => Set(ref _isLibraryEmpty, value); }
@@ -663,11 +765,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (IsScanning) return;
         IsScanning = true;
-        ScanStatus = "Scanning enabled locations…";
+        ScanStatus = "Scanning local profiles and configured platforms…";
         IssueText = string.Empty;
         ExportFiles.Clear();
         SelectedExport = null;
-        PreviewStatus = "Refreshing the pending GitHub changes…";
+        PreviewStatus = IsGitHubSignedIn
+            ? "Refreshing the pending GitHub changes…"
+            : "Connect GitHub, then build a preview. Nothing has been uploaded.";
         OnPropertyChanged(nameof(HasPreviewFiles));
         AppLog.Info("Local scan started.");
 
@@ -681,18 +785,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 item.IsCustom,
                 Directory.Exists(item.Path))).ToArray();
             var result = await _scanner.ScanAsync(scanLocations);
-            var cacheUpdate = await Task.Run(() => _localMetadataCache.UpdateAsync(result.SourceFiles));
+            var cacheUpdate = await Task.Run(() => _localMetadataCache.UpdateAsync(result.SourceFiles, _platformAdapters));
             if (cacheUpdate.UpdatedFiles > 0 || cacheUpdate.FailedFiles > 0)
             {
                 AppLog.Info($"Local metadata cache update finished. Updated={cacheUpdate.UpdatedFiles}; unchanged={cacheUpdate.UnchangedFiles}; skipped={cacheUpdate.FailedFiles}.");
             }
+
+            ScanStatus = "Scanning configured platforms…";
+            await ScanPlatformsAsync();
+            var catalogUpdate = await Task.Run(() => _localCatalogCache.UpdateAsync(result.SourceFiles));
+            if (catalogUpdate.GamesUpdated > 0 || catalogUpdate.Failed > 0)
+                AppLog.Info($"Local achievement catalog cache update finished. Games={catalogUpdate.GamesUpdated}; images={catalogUpdate.ImagesStored}; failed={catalogUpdate.Failed}.");
+
+            var libraryGames = await Task.Run(() => result.Games.Select(game =>
+            {
+                var catalog = _localCatalogCache.LoadCatalog(game.AppId);
+                return catalog is null ? game : ProfileMerger.EnrichWithCatalog(game, catalog);
+            }).ToArray());
 
             _sourceFiles = result.SourceFiles;
             WatchSourcesChanged?.Invoke(this, _sourceFiles);
             Games.Clear();
             var gamesToLoadMetadata = new List<GameCardViewModel>();
             var gamesToLoadViewerData = new List<GameCardViewModel>();
-            foreach (var game in result.Games)
+            foreach (var game in libraryGames)
             {
                 var card = new GameCardViewModel(game);
                 if (_settings.ManualGameNames.TryGetValue(game.AppId, out var manualName))
@@ -701,7 +817,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
                 Games.Add(card);
                 gamesToLoadMetadata.Add(card);
-                if (!game.CompletionPercent.HasValue) gamesToLoadViewerData.Add(card);
+                if (!game.CompletionPercent.HasValue || NeedsCatalogMetadata(game)) gamesToLoadViewerData.Add(card);
             }
             // Load public metadata/viewer data per game, but only refresh the UI once
             // after each batch settles instead of per-game.
@@ -723,10 +839,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (_settings.AutoSyncAfterUnlock)
                     RequestAutoSyncAfterUnlock(notification.AppId);
             }
-            _gameplayTracker.SetLibraryGames(result.Games.Select(game => game.AppId), DateTimeOffset.UtcNow);
+            _gameplayTracker.SetLibraryGames(libraryGames.Select(game => game.AppId), DateTimeOffset.UtcNow);
             RefreshPlaytimeSnapshots(DateTimeOffset.UtcNow);
             ProcessTrackingConfigurationChanged?.Invoke(this, EventArgs.Empty);
-            IsLibraryEmpty = result.Games.Count == 0;
+            IsLibraryEmpty = libraryGames.Length == 0;
 
             foreach (var location in result.Locations)
             {
@@ -736,14 +852,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             UpdateLibrarySummary();
 
             LastScanText = $"Scanned {result.CompletedAt.ToLocalTime():MMM d, h:mm tt}";
-            ScanStatus = result.Games.Count == 0
+            ScanStatus = libraryGames.Length == 0
                 ? "No supported achievement profiles found yet"
-                : $"Found {result.Games.Count} game profile{(result.Games.Count == 1 ? string.Empty : "s")} · local only";
+                : $"Found {libraryGames.Length} game profile{(libraryGames.Length == 1 ? string.Empty : "s")} · local + platform scan";
             IssueText = result.Issues.Count == 0
                 ? ""
                 : $"{result.Issues.Count} file or folder item(s) were skipped. Open the log for details.";
             RefreshGamesView();
-            AppLog.Info($"Local scan finished. Games={result.Games.Count}; files={result.CandidateFiles}; issues={result.Issues.Count}.");
+            AppLog.Info($"Local scan finished. Games={libraryGames.Length}; files={result.CandidateFiles}; issues={result.Issues.Count}.");
             foreach (var issue in result.Issues.Take(200)) AppLog.Warning(issue);
             if (_settings.AutoSyncAfterScan && newUnlockNotifications.Count > 0)
                 await RunAutomaticSyncAsync();
@@ -760,6 +876,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         finally
         {
             IsScanning = false;
+            GC.Collect(2, GCCollectionMode.Optimized, false);
         }
     }
 
@@ -771,11 +888,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        _isSignInRunning = true;
-        OnPropertyChanged(nameof(IsSignInRunning));
-        OnPropertyChanged(nameof(CanStartGitHubSignIn));
-        OnPropertyChanged(nameof(CanBuildGitHubPreview));
-        OnPropertyChanged(nameof(CanPushGitHubPreview)); GitHubStatus = "Requesting a one-time GitHub device code…";
+        IsSignInRunning = true;
+        GitHubStatus = "Requesting a one-time GitHub device code…";
         try
         {
             var session = await _githubDeviceFlow.StartAsync(GitHubOAuthConfiguration.ClientId);
@@ -810,8 +924,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!string.Equals(previousLogin, account.Login, StringComparison.OrdinalIgnoreCase))
             {
                 _settings.AutoSyncAfterScan = false;
+                _settings.AutoSyncAfterUnlock = false;
                 _settings.HasAuthorizedFirstUpload = false;
                 OnPropertyChanged(nameof(AutoSyncAfterScan));
+                OnPropertyChanged(nameof(AutoSyncAfterUnlock));
             }
             SaveSettings();
             IsGitHubSignedIn = true;
@@ -829,8 +945,62 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            _isSignInRunning = false;
-            OnPropertyChanged(nameof(IsSignInRunning)); }
+            IsSignInRunning = false;
+        }
+    }
+
+    public async Task ConnectGitHubWithTokenAsync(string token)
+    {
+        if (_isSignInRunning) return;
+        var cleaned = token?.Trim() ?? string.Empty;
+        if (cleaned.Length is < 20 or > 5000)
+        {
+            GitHubStatus = "Paste a valid classic GitHub personal access token, then choose Connect with token.";
+            return;
+        }
+
+        IsSignInRunning = true;
+        GitHubStatus = "Checking the token with GitHub…";
+        try
+        {
+            var account = await _githubSyncClient.GetCurrentUserAsync(cleaned);
+            if (!account.HasPublicRepositoryAccess)
+                throw new GitHubAuthorizationException("This token does not report public_repo access. Create a classic token with public_repo permission and try again.");
+
+            var previousLogin = _settings.GitHubLogin;
+            _githubTokenStore.Write(new GitHubStoredCredential(cleaned, "bearer", "public_repo", null, null, null).Serialize());
+            _settings.GitHubLogin = account.Login;
+            _settings.GitHubDisplayName = string.IsNullOrWhiteSpace(account.DisplayName) ? account.Login : account.DisplayName!;
+            _settings.GitHubAvatarUrl = account.AvatarUrl ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(_settings.GitHubOwner)) _settings.GitHubOwner = account.Login;
+            if (string.IsNullOrWhiteSpace(_settings.GitHubRepository)) _settings.GitHubRepository = "achievement-viewer";
+            if (string.IsNullOrWhiteSpace(_settings.GitHubBranch)) _settings.GitHubBranch = "user";
+            if (!string.Equals(previousLogin, account.Login, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.AutoSyncAfterScan = false;
+                _settings.AutoSyncAfterUnlock = false;
+                _settings.HasAuthorizedFirstUpload = false;
+                OnPropertyChanged(nameof(AutoSyncAfterScan));
+                OnPropertyChanged(nameof(AutoSyncAfterUnlock));
+            }
+            SaveSettings();
+            IsGitHubSignedIn = true;
+            GitHubStatus = $"Connected as {account.Login}. Review the target repository and preview before syncing.";
+            RefreshGitHubAvatar();
+            AppLog.Info($"GitHub account connected with a personal access token: {account.Login}.");
+        }
+        catch (Exception exception)
+        {
+            IsGitHubSignedIn = false;
+            GitHubStatus = exception is GitHubAuthorizationException or GitHubApiException
+                ? exception.Message
+                : "GitHub token verification failed. Check the token and local log.";
+            AppLog.Warning($"GitHub personal access token was rejected: {exception.GetType().Name}.");
+        }
+        finally
+        {
+            IsSignInRunning = false;
+        }
     }
 
     private void DisconnectGitHub()
@@ -964,6 +1134,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var result = await _githubSyncClient.PushAsync(token, preview);
             _settings.HasAuthorizedFirstUpload = true;
             SaveSettings();
+            RefreshAutoSyncStatus();
             _githubPreview = null;
             OnPropertyChanged(nameof(CanPushGitHubPreview));
             GitHubStatus = result.Pushed
@@ -1205,9 +1376,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task SyncAllMetadataAsync()
     {
         if (_isSyncAllRunning) return;
-        _isSyncAllRunning = true;
-        OnPropertyChanged(nameof(CanSyncAll));
-        OnPropertyChanged(nameof(IsSyncAllRunning));
+        IsSyncAllRunning = true;
         BulkSyncStatus = "Preparing the local metadata…";
         try
         {
@@ -1221,6 +1390,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var (exports, failures) = MetadataAchievementExportPlanner.Build(MetadataRoot, appIds);
             var planned = exports.Select(file => new AchievementExportFile(
                 file.RelativePath, file.AppId, file.KnownStates, file.Json)).ToList();
+            if (planned.Count == 0)
+            {
+                BulkSyncResults.Clear();
+                foreach (var failure in failures)
+                    BulkSyncResults.Add($"{failure.AppId} — failed — {failure.Reason}");
+                BulkSyncStatus = failures.Count == 0
+                    ? "No cached achievement metadata is ready to sync. Scan the library first."
+                    : $"No files were ready to sync; {failures.Count:N0} file(s) need attention.";
+                OnPropertyChanged(nameof(HasBulkSyncReport));
+                return;
+            }
+
+            var paths = string.Join(Environment.NewLine, planned.Take(12).Select(file => "• " + file.RelativePath));
+            if (planned.Count > 12) paths += $"{Environment.NewLine}• …and {planned.Count - 12:N0} more files.";
+            var confirmation = MessageBox.Show(
+                $"Sync {planned.Count:N0} AppID achievement file(s) to {GitHubOwner}/{GitHubRepository} on branch {GitHubBranch}?\n\n{paths}\n\nOnly achievement JSON will be sent. Continue?",
+                "Confirm metadata sync",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                BulkSyncStatus = "Metadata sync cancelled. Nothing was uploaded.";
+                return;
+            }
+
             GitHubStatus = "Syncing achievement metadata…";
             var result = await _githubSyncClient.PushBulkAsync(token, target, planned);
             BulkSyncResults.Clear();
@@ -1229,6 +1423,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             foreach (var entry in result.Entries)
                 BulkSyncResults.Add($"{entry.AppId} — {entry.Action} — {entry.Detail}");
             BulkSyncStatus = result.Pushed ? $"Sync complete: {result.Summary}" : $"Nothing to sync: {result.Summary}";
+            if (result.Pushed)
+            {
+                _settings.HasAuthorizedFirstUpload = true;
+                SaveSettings();
+                RefreshAutoSyncStatus();
+            }
             if (failures.Count > 0 && result.Pushed)
                 BulkSyncStatus += $" · {failures.Count:N0} file(s) failed";
             if (result.CommitUrl is not null) GitHubStatus = $"Metadata synced to {target.Owner}/{target.Repository} ({target.Branch}). Commit: {result.CommitUrl}";
@@ -1246,9 +1446,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            _isSyncAllRunning = false;
-            OnPropertyChanged(nameof(CanSyncAll));
-            OnPropertyChanged(nameof(IsSyncAllRunning)); }
+            IsSyncAllRunning = false;
+        }
     }
 
     private static string MetadataRoot => Path.Combine(
@@ -1311,11 +1510,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task BackupSavesAsync()
     {
         if (_isBackupRunning) return;
-        _isBackupRunning = true;
-        OnPropertyChanged(nameof(CanBackup));
-        OnPropertyChanged(nameof(CanSyncAll));
-        OnPropertyChanged(nameof(CanRestore));
-        OnPropertyChanged(nameof(IsBackupRunning)); _backupFilesProcessed = 0;
+        IsBackupRunning = true;
+        _backupFilesProcessed = 0;
         _backupFilesTotal = 0;
         _backupBytesProcessed = 0;
         _backupBytesTotal = 0;
@@ -1413,22 +1609,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            _isBackupRunning = false;
-            OnPropertyChanged(nameof(CanBackup));
-            OnPropertyChanged(nameof(CanRestore));
-            OnPropertyChanged(nameof(CanSyncAll));
-            OnPropertyChanged(nameof(IsBackupRunning)); }
+            IsBackupRunning = false;
+            GC.Collect(2, GCCollectionMode.Optimized, false);
+        }
     }
 
     /// <summary>Restores save files and achievements from the repository, writing only after explicit confirmation.</summary>
     private async Task RestoreSavesAsync()
     {
         if (_isRestoreRunning) return;
-        _isRestoreRunning = true;
-        OnPropertyChanged(nameof(CanBackup));
-        OnPropertyChanged(nameof(CanRestore));
-        OnPropertyChanged(nameof(CanSyncAll));
-        OnPropertyChanged(nameof(IsRestoreRunning)); RestoreStatus = "Fetching backups from the repository…";
+        IsRestoreRunning = true;
+        RestoreStatus = "Fetching backups from the repository…";
         try
         {
             var token = await ReadGitHubTokenAsync();
@@ -1560,11 +1751,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            _isRestoreRunning = false;
-            OnPropertyChanged(nameof(CanBackup));
-            OnPropertyChanged(nameof(CanRestore));
-            OnPropertyChanged(nameof(CanSyncAll));
-            OnPropertyChanged(nameof(IsRestoreRunning)); }
+            IsRestoreRunning = false;
+        }
     }
 
     public void SetManualGameName(GameCardViewModel game, string? title)
@@ -1613,7 +1801,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         await _viewerDataSlots.WaitAsync();
         try
         {
-            if (!game.Profile.HasCompleteCatalog)
+            if (NeedsCatalogMetadata(game.Profile))
             {
                 var catalogResult = await _viewerGameInfoClient.GetCatalogAsync(
                     _settings.GitHubOwner,
@@ -1623,7 +1811,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 if (catalogResult.Success && catalogResult.Catalog is not null)
                 {
-                    game.ApplyCatalog(catalogResult.Catalog);
+                    var cachedCatalog = await _localCatalogCache.CacheCatalogAsync(game.AppId, catalogResult.Catalog);
+                    var catalog = cachedCatalog ?? StripRemoteCatalogIcons(catalogResult.Catalog);
+                    await Application.Current!.Dispatcher.InvokeAsync(() => game.ApplyCatalog(catalog));
                     AppLog.Info($"Loaded public viewer catalog for AppID {game.AppId}; entries={catalogResult.Catalog.Achievements.Count}.");
                 }
                 else if (catalogResult.Status is not (ViewerCatalogStatus.NotConfigured or ViewerCatalogStatus.NotFound))
@@ -1639,7 +1829,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 game.AppId);
             if (progressResult.Success && progressResult.Progress is not null)
             {
-                game.ApplyViewerProgress(progressResult.Progress);
+                await Application.Current!.Dispatcher.InvokeAsync(() => game.ApplyViewerProgress(progressResult.Progress));
                 AppLog.Info($"Loaded public viewer progress for AppID {game.AppId}; entries={progressResult.Progress.Achievements.Count}.");
             }
             else if (progressResult.Status is not (ViewerProgressStatus.NotConfigured or ViewerProgressStatus.NotFound))
@@ -1661,6 +1851,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _viewerDataSlots.Release();
         }
     }
+
+    private static bool NeedsCatalogMetadata(GameProfile profile) =>
+        !profile.HasCompleteCatalog || profile.Achievements.Any(achievement =>
+            string.IsNullOrWhiteSpace(achievement.DisplayName)
+            || string.IsNullOrWhiteSpace(achievement.Description)
+            || string.IsNullOrWhiteSpace(achievement.IconUri));
+
+    private static ParsedProfile StripRemoteCatalogIcons(ParsedProfile catalog) => catalog with
+    {
+        Achievements = catalog.Achievements.Select(achievement => achievement with
+        {
+            IconUri = Uri.TryCreate(achievement.IconUri, UriKind.Absolute, out var uri) && uri.IsFile
+                ? achievement.IconUri
+                : null
+        }).ToArray()
+    };
 
     private void UpdateLibrarySummary()
     {
@@ -1777,6 +1983,182 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return $"{bytes / (1024.0 * 1024 * 1024):0.0} GB";
     }
 
+    private async Task ScanPlatformsAsync()
+    {
+        if (IsPlatformScanRunning) return;
+        IsPlatformScanRunning = true;
+        PlatformScanStatus = "Scanning configured platform sources...";
+        try
+        {
+            var options = BuildPlatformSourceOptions();
+            var report = await _platformScanService.ScanAsync(options);
+            PlatformStatuses = report.Platforms;
+            PlatformScanStatus = report.GamesConverted > 0
+                ? $"Converted {report.GamesConverted} game(s), wrote {report.FilesWritten} file(s)."
+                : "No platform achievement data was found.";
+            if (report.Messages.Count > 0)
+                PlatformScanStatus += " Details: " + string.Join("; ", report.Messages.Take(5));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or HttpRequestException or TaskCanceledException)
+        {
+            PlatformScanStatus = $"Platform scan failed: {exception.GetType().Name}.";
+            if (_enableDiagnostics) AppLog.Warning($"Platform scan failed: {exception.Message}");
+        }
+        finally
+        {
+            IsPlatformScanRunning = false;
+        }
+    }
+
+    private PlatformSourceOptions BuildPlatformSourceOptions()
+    {
+        var options = PlatformSourceOptions.CreateDefault();
+        foreach (var kv in _settings.PlatformSourceRoots)
+        {
+            var key = kv.Key.ToLowerInvariant();
+            var value = kv.Value;
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            var expanded = Environment.ExpandEnvironmentVariables(value);
+            switch (key)
+            {
+                case "steam": options.SteamRoot = expanded; break;
+                case "xblen": options.XblenRoot = expanded; break;
+                case "xboxpc": options.XboxPcRoot = expanded; break;
+                case "xbox360": options.Xbox360Root = expanded; break;
+                case "gfwl": options.GfwlRoot = expanded; break;
+                case "rpcs3": options.Rpcs3Root = expanded; break;
+                case "ps4": options.Ps4Root = expanded; break;
+                case "ps5": options.Ps5Root = expanded; break;
+                case "xenia": options.XeniaRoot = expanded; break;
+                case "epic": options.EpicRoot = expanded; break;
+                case "gog": options.GogRoot = expanded; break;
+                case "uplay": options.UplayRoot = expanded; break;
+            }
+        }
+        options.RetroAchievementsUser = _settings.RetroAchievementsUser;
+        options.RetroAchievementsApiKey = ReadPlatformCredential(_retroAchievementsKeyStore);
+        return options;
+    }
+
+    private static string GetPlatformRoot(PlatformSourceOptions options, string key) => key switch
+    {
+        "steam" => options.SteamRoot ?? string.Empty,
+        "xblen" => options.XblenRoot ?? string.Empty,
+        "xboxpc" => options.XboxPcRoot ?? string.Empty,
+        "xbox360" => options.Xbox360Root ?? string.Empty,
+        "gfwl" => options.GfwlRoot ?? string.Empty,
+        "rpcs3" => options.Rpcs3Root ?? string.Empty,
+        "ps4" => options.Ps4Root ?? string.Empty,
+        "ps5" => options.Ps5Root ?? string.Empty,
+        "epic" => options.EpicRoot ?? string.Empty,
+        "gog" => options.GogRoot ?? string.Empty,
+        "uplay" => options.UplayRoot ?? string.Empty,
+        _ => string.Empty
+    };
+
+    private void UpdatePlatformSourceRoot(string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) _settings.PlatformSourceRoots.Remove(key);
+        else _settings.PlatformSourceRoots[key] = value;
+        SaveSettings();
+        _platformSourceOptions = BuildPlatformSourceOptions();
+        OnPropertyChanged(nameof(PlatformSourceOptions));
+        _platformAdapters.Register(new SteamDataAdapter(_platformSourceOptions));
+    }
+
+    public void SavePlatformCredentials(string retroAchievementsApiKey)
+    {
+        try
+        {
+            StorePlatformCredential(_retroAchievementsKeyStore, retroAchievementsApiKey);
+            _platformSourceOptions = BuildPlatformSourceOptions();
+            UpdatePlatformCredentialStatus();
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or PlatformNotSupportedException or ArgumentException or InvalidOperationException)
+        {
+            PlatformCredentialStatus = "Credentials could not be saved. Check Windows Credential Manager access and try again.";
+            AppLog.Warning($"Platform API credentials could not be saved: {exception.GetType().Name}.");
+        }
+    }
+
+    public void ClearPlatformCredentials()
+    {
+        try
+        {
+            _retroAchievementsKeyStore.Delete();
+            _platformSourceOptions = BuildPlatformSourceOptions();
+            UpdatePlatformCredentialStatus();
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or PlatformNotSupportedException or InvalidOperationException)
+        {
+            PlatformCredentialStatus = "Credentials could not be cleared. Check Windows Credential Manager access and try again.";
+            AppLog.Warning($"Platform API credentials could not be cleared: {exception.GetType().Name}.");
+        }
+    }
+
+    private void MigrateLegacyPlatformCredentials()
+    {
+        var changed = false;
+        var raKey = _settings.LegacyRetroAchievementsApiKey;
+        Migrate(_retroAchievementsKeyStore, ref raKey);
+        _settings.LegacyRetroAchievementsApiKey = raKey;
+        changed |= !string.IsNullOrWhiteSpace(_settings.LegacyEpicAccessToken)
+                   || !string.IsNullOrWhiteSpace(_settings.LegacyGogAccessToken);
+        _settings.LegacyEpicAccessToken = string.Empty;
+        _settings.LegacyGogAccessToken = string.Empty;
+        if (changed) SaveSettings();
+
+        void Migrate(WindowsCredentialTokenStore store, ref string legacy)
+        {
+            if (string.IsNullOrWhiteSpace(legacy)) return;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(store.Read())) store.Write(legacy);
+            }
+            catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or PlatformNotSupportedException or ArgumentException or InvalidOperationException)
+            {
+                AppLog.Warning($"A legacy platform credential could not be migrated: {exception.GetType().Name}.");
+            }
+            finally
+            {
+                legacy = string.Empty;
+                changed = true;
+            }
+        }
+    }
+
+    private static string? ReadPlatformCredential(WindowsCredentialTokenStore store)
+    {
+        try { return store.Read(); }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or PlatformNotSupportedException or InvalidOperationException)
+        {
+            AppLog.Warning($"A platform credential could not be read: {exception.GetType().Name}.");
+            return null;
+        }
+    }
+
+    private static void StorePlatformCredential(WindowsCredentialTokenStore store, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (value.Length > 5000) throw new ArgumentException("A platform credential is too long.");
+        store.Write(value.Trim());
+    }
+
+    private void UpdatePlatformCredentialStatus()
+    {
+        var ra = !string.IsNullOrWhiteSpace(ReadPlatformCredential(_retroAchievementsKeyStore));
+        PlatformCredentialStatus = $"RetroAchievements API key: {(ra ? "saved" : "not set")}. Stored in Windows Credential Manager.";
+    }
+
+    private void OpenEnablerWizard()
+    {
+        var window = new AchievementEnablerWindow(_enablerService)
+        {
+            Owner = Application.Current?.MainWindow
+        };
+        window.ShowDialog();
+    }
+
     public void Dispose()
     {
         _viewerCatalogHttp.Dispose();
@@ -1819,9 +2201,9 @@ public sealed record NotificationSoundOption(string Code, string Label)
     public override string ToString() => Label;
 }
 
-internal sealed class RelayCommand(Action<object?> execute) : ICommand
+internal sealed class RelayCommand(Action<object?> execute, Func<bool>? canExecute = null) : ICommand
 {
-    public bool CanExecute(object? parameter) => true;
+    public bool CanExecute(object? parameter) => canExecute?.Invoke() ?? true;
     public void Execute(object? parameter) => execute(parameter);
     public event EventHandler? CanExecuteChanged
     {

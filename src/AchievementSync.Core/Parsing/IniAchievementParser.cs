@@ -32,14 +32,19 @@ public sealed class IniAchievementParser : IAchievementParser
                 if (string.IsNullOrWhiteSpace(section)) return;
                 var state = Find(values, "earned", "achieved", "unlocked", "state");
                 var unlocked = ParseState(state);
-                if (!unlocked.HasValue) return;
-
                 var time = Find(values, "earned_time", "unlocktime", "unlock_time", "timestamp");
                 long? unixTime = long.TryParse(time, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
                     ? parsed
                     : null;
+                var displayName = Find(values, "displayName", "display_name", "name", "title");
+                var description = Find(values, "description", "desc");
+                var icon = Find(values, "icon", "icon_gray", "icongray");
+                var hidden = ParseState(Find(values, "hidden")) == true;
+                if (!unlocked.HasValue && string.IsNullOrWhiteSpace(displayName)
+                    && string.IsNullOrWhiteSpace(description) && string.IsNullOrWhiteSpace(icon) && !hidden) return;
 
-                achievements.Add(new AchievementRecord(section, null, null, unlocked, unixTime));
+                var resolvedIcon = AchievementIconResolver.Resolve(icon, path, appId);
+                achievements.Add(new AchievementRecord(section, displayName, description, unlocked, unixTime, resolvedIcon, hidden));
             }
 
             foreach (var rawLine in File.ReadLines(path))
@@ -67,13 +72,14 @@ public sealed class IniAchievementParser : IAchievementParser
             }
 
             var fileTime = new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+            var hasCatalog = achievements.Any(HasDetails) && achievements.All(HasDetails);
             return ParseResult.Parsed(new ParsedProfile(
                 appId,
                 FormatName,
                 path,
                 fileTime,
                 achievements,
-                HasCompleteCatalog: false));
+                HasCompleteCatalog: hasCatalog));
         }
         catch (IOException)
         {
@@ -103,4 +109,11 @@ public sealed class IniAchievementParser : IAchievementParser
         if (value == "0") return false;
         return null;
     }
+
+    private static bool HasDetails(AchievementRecord record) =>
+        !string.IsNullOrWhiteSpace(record.DisplayName)
+        || !string.IsNullOrWhiteSpace(record.Description)
+        || !string.IsNullOrWhiteSpace(record.IconUri)
+        || record.IsHidden;
+
 }

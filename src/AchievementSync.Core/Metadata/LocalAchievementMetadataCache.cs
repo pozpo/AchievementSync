@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using AchievementSync.Core.Models;
 using AchievementSync.Core.Parsing;
 using AchievementSync.Core.Scanning;
+using AchievementSync.Core.Scanning.PlatformAdapters;
 
 namespace AchievementSync.Core.Metadata;
 
@@ -18,11 +19,29 @@ public sealed class LocalAchievementMetadataCache(string? rootDirectory = null)
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private readonly string _rootDirectory = rootDirectory ?? Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AchievementSync", "metadata");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "AchievementSync", "metadata");
     private readonly IniAchievementParser _iniParser = new();
+    private readonly PlatformAdapterRegistry? _platformAdapters;
+
+    public LocalAchievementMetadataCache(string? rootDirectory, PlatformAdapterRegistry? platformAdapters)
+        : this(rootDirectory)
+    {
+        _platformAdapters = platformAdapters;
+    }
 
     public async Task<MetadataCacheUpdateResult> UpdateAsync(
         IReadOnlyList<DiscoveredAchievementFile> sourceFiles,
+        CancellationToken cancellationToken = default)
+    {
+        return await UpdateAsync(sourceFiles, _platformAdapters, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Scan local sources, then resolve any configured platform adapters for AppIDs that still
+    /// lack a cached achievements.json, writing viewer-compatible JSON to Metadata/&lt;AppID&gt;/.</summary>
+    public async Task<MetadataCacheUpdateResult> UpdateAsync(
+        IReadOnlyList<DiscoveredAchievementFile> sourceFiles,
+        PlatformAdapterRegistry? platformAdapters,
         CancellationToken cancellationToken = default)
     {
         var updated = 0;
@@ -75,6 +94,51 @@ public sealed class LocalAchievementMetadataCache(string? rootDirectory = null)
                     json, cancellationToken).ConfigureAwait(false);
                 Count(write, ref updated, ref unchanged, ref failed);
                 break;
+            }
+        }
+
+        // Platform adapters: fill in Metadata/&lt;AppID&gt;/achievements.json for AppIDs still missing a cache file.
+        if (platformAdapters is not null)
+        {
+            var missing = sourceFiles
+                .Where(file => AppIdValidator.IsValid(file.AppId))
+                .Select(file => file.AppId)
+                .Distinct(StringComparer.Ordinal)
+                .Where(appId => !File.Exists(Path.Combine(_rootDirectory, appId, "achievements.json")))
+                .ToList();
+
+            foreach (var appId in missing)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PlatformAdapter? chosen = null;
+                foreach (var platform in platformAdapters.ConfiguredPlatforms())
+                {
+                    if (platformAdapters.TryGet(platform, out var adapter) && adapter is not null && adapter.IsConfigured)
+                    {
+                        chosen = adapter;
+                        break;
+                    }
+                }
+                if (chosen is null) continue;
+
+                var resolve = await chosen.ResolveAsync(appId, cancellationToken).ConfigureAwait(false);
+                if (!resolve.Succeeded || resolve.States is null || resolve.States.Count == 0) continue;
+
+                var states = new SortedDictionary<string, PlatformAchievementState>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in resolve.States)
+                    states[kv.Key] = kv.Value;
+                var json = JsonSerializer.SerializeToUtf8Bytes(states, JsonOptions);
+                var destination = Path.Combine(_rootDirectory, appId, "achievements.json");
+                try
+                {
+                    await WriteAtomicBytesAsync(destination, json, cancellationToken).ConfigureAwait(false);
+                    updated++;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+                {
+                    failed++;
+                }
             }
         }
 
@@ -183,7 +247,7 @@ public sealed class LocalAchievementMetadataCache(string? rootDirectory = null)
             return false;
         }
 
-        var states = new SortedDictionary<string, ViewerAchievementState>(StringComparer.OrdinalIgnoreCase);
+        var states = new SortedDictionary<string, PlatformAchievementState>(StringComparer.OrdinalIgnoreCase);
         foreach (var group in profile.Achievements
                      .Where(item => item.IsUnlocked.HasValue && !string.IsNullOrWhiteSpace(item.ApiName))
                      .GroupBy(item => item.ApiName.Trim(), StringComparer.OrdinalIgnoreCase))
@@ -194,7 +258,7 @@ public sealed class LocalAchievementMetadataCache(string? rootDirectory = null)
                 .Where(item => earned ? item.IsUnlocked == true : item.IsUnlocked == false)
                 .Select(item => item.UnlockTimeUnix ?? 0)
                 .ToArray();
-            states[group.Key] = new ViewerAchievementState(earned, timestamps.Length == 0 ? 0 : timestamps.Max());
+            states[group.Key] = new PlatformAchievementState(earned, timestamps.Length == 0 ? 0 : timestamps.Max());
         }
 
         if (states.Count == 0) return false;
@@ -283,6 +347,27 @@ public sealed class LocalAchievementMetadataCache(string? rootDirectory = null)
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
     }
 
+    private static async Task WriteAtomicBytesAsync(string destination, byte[] contents, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        var temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                             16 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await output.WriteAsync(contents, cancellationToken).ConfigureAwait(false);
+                await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                output.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, destination, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteTemporaryFile(temporary);
+        }
+    }
+
     private static void TryDeleteTemporaryFile(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); }
@@ -300,8 +385,4 @@ public sealed class LocalAchievementMetadataCache(string? rootDirectory = null)
     }
 
     private enum WriteOutcome { Updated, Unchanged, Failed }
-
-    private sealed record ViewerAchievementState(
-        [property: JsonPropertyName("earned")] bool Earned,
-        [property: JsonPropertyName("earned_time")] long EarnedTime);
 }

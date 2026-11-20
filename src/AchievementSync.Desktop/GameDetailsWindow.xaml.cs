@@ -21,41 +21,21 @@ public partial class GameDetailsWindow : Window
 {
     private readonly ICollectionView _view;
     private readonly GameCardViewModel _game;
+    private readonly ObservableCollection<AchievementRow> _rows;
     private string _filter = "All";
 
     public GameDetailsWindow(GameCardViewModel game)
     {
         _game = game ?? throw new ArgumentNullException(nameof(game));
-        var profile = game.Profile;
         InitializeComponent();
         SourceInitialized += (_, _) => WindowAppearance.Apply(new WindowInteropHelper(this).Handle);
         GameTitle.Text = game.Title;
         HeroArtwork.Source = game.Artwork;
-        var viewerProgressIncluded = profile.SourceFiles.Any(source => source.StartsWith("viewer://", StringComparison.OrdinalIgnoreCase));
-        var localSourceCount = profile.SourceFiles.Count(source => !source.StartsWith("viewer://", StringComparison.OrdinalIgnoreCase));
-        AppIdText.Text = viewerProgressIncluded
-            ? $"Steam AppID {profile.AppId}  ·  {localSourceCount} local profile file(s) + public viewer data"
-            : $"Steam AppID {profile.AppId}  ·  {localSourceCount} local profile file(s)";
-        var known = profile.Achievements.Where(item => item.IsUnlocked.HasValue).ToArray();
-        var unlocked = known.Count(item => item.IsUnlocked == true);
-        var locked = known.Length - unlocked;
-        UnlockedText.Text = unlocked.ToString("N0");
-        LockedText.Text = locked.ToString("N0");
-        CompletionText.Text = profile.CompletionPercent is { } percentage ? $"{percentage:0.#}%" : "—";
-        var unknown = profile.Achievements.Count(item => item.IsUnlocked is null);
-        CatalogNote.Text = profile.HasCompleteCatalog
-            ? $"{profile.Achievements.Count:N0} achievements in the catalog · {unknown:N0} unlock state(s) unknown"
-            : $"{unlocked:N0} unlocked · {known.Length:N0} known states · total achievement catalog unavailable";
-        if (viewerProgressIncluded)
-        {
-            CatalogNote.Text += " · includes saved progress from the configured public Achievement Viewer";
-        }
-
-        var rows = new ObservableCollection<AchievementRow>(profile.Achievements.Select(item => new AchievementRow(item)));
-        _view = CollectionViewSource.GetDefaultView(rows);
+        _rows = [];
+        _view = CollectionViewSource.GetDefaultView(_rows);
         _view.Filter = FilterAchievement;
         AchievementList.ItemsSource = _view;
-        UpdateAchievementEmptyState();
+        RefreshProfileDetails();
         UpdatePlaytimeText();
         _game.PropertyChanged += Game_PropertyChanged;
         Closed += (_, _) => _game.PropertyChanged -= Game_PropertyChanged;
@@ -99,6 +79,7 @@ public partial class GameDetailsWindow : Window
     private void Game_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(GameCardViewModel.Title)) GameTitle.Text = _game.Title;
+        if (e.PropertyName == nameof(GameCardViewModel.Profile)) RefreshProfileDetails();
         if (e.PropertyName is nameof(GameCardViewModel.PlaytimeText)
             or nameof(GameCardViewModel.LastPlayedText)
             or nameof(GameCardViewModel.CurrentSessionText)
@@ -106,6 +87,33 @@ public partial class GameDetailsWindow : Window
         {
             UpdatePlaytimeText();
         }
+    }
+
+    private void RefreshProfileDetails()
+    {
+        var profile = _game.Profile;
+        var viewerProgressIncluded = profile.SourceFiles.Any(source => source.StartsWith("viewer://", StringComparison.OrdinalIgnoreCase));
+        var localSourceCount = profile.SourceFiles.Count(source => !source.StartsWith("viewer://", StringComparison.OrdinalIgnoreCase));
+        AppIdText.Text = viewerProgressIncluded
+            ? $"Steam AppID {profile.AppId}  ·  {localSourceCount} local profile file(s) + public viewer data"
+            : $"Steam AppID {profile.AppId}  ·  {localSourceCount} local profile file(s)";
+        var known = profile.Achievements.Where(item => item.IsUnlocked.HasValue).ToArray();
+        var unlocked = known.Count(item => item.IsUnlocked == true);
+        var locked = known.Length - unlocked;
+        UnlockedText.Text = unlocked.ToString("N0");
+        LockedText.Text = locked.ToString("N0");
+        CompletionText.Text = profile.CompletionPercent is { } percentage ? $"{percentage:0.#}%" : "—";
+        var unknown = profile.Achievements.Count(item => item.IsUnlocked is null);
+        CatalogNote.Text = profile.HasCompleteCatalog
+            ? $"{profile.Achievements.Count:N0} achievements in the catalog · {unknown:N0} unlock state(s) unknown"
+            : $"{unlocked:N0} unlocked · {known.Length:N0} known states · total achievement catalog unavailable";
+        if (viewerProgressIncluded)
+            CatalogNote.Text += " · includes saved progress from the configured public Achievement Viewer";
+
+        _rows.Clear();
+        foreach (var achievement in profile.Achievements) _rows.Add(new AchievementRow(achievement));
+        _view.Refresh();
+        UpdateAchievementEmptyState();
     }
 
     private void UpdatePlaytimeText()
@@ -179,11 +187,13 @@ internal sealed class AchievementRow
             && (uri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(uri.Host, "steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase));
         if (!isLocal && !isSteamHost) return null;
+        if (isLocal && !File.Exists(uri.LocalPath)) return null;
 
         try
         {
             var image = new BitmapImage();
             image.BeginInit();
+            image.DecodePixelWidth = 96;
             if (isLocal)
             {
                 image.CacheOption = BitmapCacheOption.OnLoad;
@@ -198,7 +208,7 @@ internal sealed class AchievementRow
             if (image.CanFreeze) image.Freeze();
             return image;
         }
-        catch (Exception exception) when (exception is IOException or UriFormatException or NotSupportedException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UriFormatException or NotSupportedException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             return null;
         }

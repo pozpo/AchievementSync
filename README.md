@@ -28,7 +28,7 @@ It combines an **Achievement Enabler** (Steam Goldberg emulator, ColdClient, Ubi
 
 | Feature | What it does |
 |---|---|
-| **Achievement Enabler** | Enable achievements for Steam (Goldberg emulator), ColdClient, Ubisoft Connect R1/R2, Epic Games (Nemirtingas), GOG (UniverseLAN), and EA/Origin games. |
+| **Achievement Enabler** | Crackes a game and enable achievements for Steam (Goldberg emulator), ColdClient, Ubisoft Connect R1/R2, Epic Games (Nemirtingas), GOG (UniverseLAN), and EA/Origin games. |
 | **Built-In Schema Generator** | Generate Steam achievement catalogs directly inside the app — no external tools to download. |
 | **Steam Login via Credential Manager** | Sign in once; your refresh token is stored in Windows Credential Manager, never in plain text. |
 | **Plan-and-Apply Workflow** | Preview every file change before applying. Originals are backed up with `.achievementsync-backup`. |
@@ -54,7 +54,7 @@ Before using AchievementSync's GitHub sync, **follow [Roschach96's achievement-v
 2. Place it in any folder (e.g., `C:\Games\AchievementSync\` or your Desktop).
 3. Double-click `AchievementSync.exe` — no installer, no .NET runtime needed.
 
-### Step 3 — Enable achievements for a game
+### Step 3 — Crack a game and enable achievements for a game
 
 1. Open AchievementSync and go to the **Achievement Enabler** tab.
 2. Sign in to Steam (saved in Windows Credential Manager).

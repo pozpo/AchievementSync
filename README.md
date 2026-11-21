@@ -46,7 +46,8 @@ It combines an **Achievement Enabler** (Steam Goldberg emulator, ColdClient, Ubi
 
 Before using AchievementSync's GitHub sync, **follow [Roschach96's achievement-viewer guide](https://github.com/Roschach96/achievement-viewer)** to fork/create your own hub page. This is the page where your unlocked achievements and save backups will appear.
 
-> 👉 Fork Roschach96's [achievement-viewer](https://github.com/Roschach96/achievement-viewer) and set up your GitHub Pages hub following their guide: https://roschach96.github.io/achievement-viewer/
+> 👉 Fork [@Roschach96](https://github.com/Roschach96)
+'s [achievement-viewer](https://github.com/Roschach96/achievement-viewer) and set up your GitHub Pages hub following their guide: https://roschach96.github.io/achievement-viewer/
 
 ### Step 2 — Download and run
 
@@ -67,7 +68,8 @@ Before using AchievementSync's GitHub sync, **follow [Roschach96's achievement-v
 
 ## 🙏 Acknowledgments
 
-AchievementSync is built on and inspired by the excellent work of **Roschach96**:
+AchievementSync is built on and inspired by the excellent work of **[@Roschach96](https://github.com/Roschach96)
+**:
 
 - **achievement-viewer hub** — https://roschach96.github.io/achievement-viewer/ — follow their guide to fork/create your own hub page for displaying synced achievements.
 - **Achievement-Enabler** — https://github.com/Roschach96/Achievement-Enabler — the emulator adapter foundation used by this project's Achievement Enabler feature.

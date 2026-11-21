@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/35212914/README.md)
+
 # AchievementSync
 
 <p align="center">

@@ -1,0 +1,55 @@
+<Window x:Class="AchievementSync.Desktop.Views.SteamTwoFactorDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Steam Guard Verification"
+        Width="480" Height="360"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{StaticResource CanvasBrush}"
+        Foreground="{StaticResource TextBrush}"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True">
+    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Margin="16" Padding="20">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Header -->
+            <StackPanel Grid.Row="0" Margin="0,0,0,12">
+                <TextBlock Text="🛡️ Steam Guard 2FA Required" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
+                <TextBlock Text="Steam requires two-factor verification to authenticate this account and generate a permanent refresh token." FontSize="11" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+
+            <!-- Prompt description -->
+            <TextBlock x:Name="PromptDescription" Grid.Row="1" FontSize="12" Foreground="{StaticResource MintBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+            <!-- 2FA Code Input -->
+            <StackPanel Grid.Row="2" Margin="0,0,0,8">
+                <TextBlock Text="Enter 5-character Steam Guard Code:" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"/>
+                <TextBox x:Name="CodeBox" Style="{StaticResource SearchBox}" Height="42" FontSize="20" FontWeight="Bold" TextAlignment="Center" CharacterCasing="Upper" MaxLength="10" VerticalContentAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Retry error message -->
+            <TextBlock x:Name="ErrorMessage" Grid.Row="3" Text="Invalid code. Please check your authenticator and try again." FontSize="11" Foreground="{StaticResource WarningBrush}" Visibility="Collapsed" Margin="0,0,0,8"/>
+
+            <!-- Buttons -->
+            <StackPanel Grid.Row="5" Orientation="Vertical">
+                <Button x:Name="SubmitButton" Content="Submit 2FA Code" Style="{StaticResource PrimaryButton}" Height="36" Click="Submit_Click" IsDefault="True" Margin="0,0,0,6"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="Approved on Steam App" Style="{StaticResource QuietButton}" Height="34" Click="AppApproved_Click" ToolTip="Click here if you tapped 'Approve' on your Steam Mobile App prompt" Margin="0,0,4,0"/>
+                    <Button Grid.Column="1" Content="Cancel" Style="{StaticResource QuietButton}" Height="34" Click="Cancel_Click" IsCancel="True" Margin="4,0,0,0"/>
+                </Grid>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

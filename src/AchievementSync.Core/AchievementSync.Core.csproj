@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Authors>Pozo</Authors>
+    <Company>Pozo</Company>
+    <Product>AchievementSync</Product>
+    <Copyright>Copyright © 2026 Pozo. Licensed under GPL-3.0-or-later.</Copyright>
+    <Version>1.2.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\schema_parse.zip" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\Achievement-Enabler-LICENSE.txt" LogicalName="AchievementSync.Core.ColdClientTemplate.Achievement-Enabler-LICENSE.txt" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\Achievement-Enabler-README.md" LogicalName="AchievementSync.Core.ColdClientTemplate.Achievement-Enabler-README.md" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\ColdClientLoader.ini" LogicalName="AchievementSync.Core.ColdClientTemplate.ColdClientLoader.ini" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\GameOverlayRenderer.dll" LogicalName="AchievementSync.Core.ColdClientTemplate.GameOverlayRenderer.dll" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\GameOverlayRenderer64.dll" LogicalName="AchievementSync.Core.ColdClientTemplate.GameOverlayRenderer64.dll" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\Goldberg-CREDITS.md" LogicalName="AchievementSync.Core.ColdClientTemplate.Goldberg-CREDITS.md" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\Goldberg-README.experimental_steamclient.md" LogicalName="AchievementSync.Core.ColdClientTemplate.Goldberg-README.experimental_steamclient.md" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\steamclient.dll" LogicalName="AchievementSync.Core.ColdClientTemplate.steamclient.dll" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\steamclient64.dll" LogicalName="AchievementSync.Core.ColdClientTemplate.steamclient64.dll" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\steamclient_loader_x64.exe" LogicalName="AchievementSync.Core.ColdClientTemplate.steamclient_loader_x64.exe" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\steamclient_loader_x86.exe" LogicalName="AchievementSync.Core.ColdClientTemplate.steamclient_loader_x86.exe" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\extra_dlls\steamstub_x32.dll" LogicalName="AchievementSync.Core.ColdClientTemplate.extra_dlls.steamstub_x32.dll" />
+    <EmbeddedResource Include="Resources\ColdClientTemplate\extra_dlls\steamstub_x64.dll" LogicalName="AchievementSync.Core.ColdClientTemplate.extra_dlls.steamstub_x64.dll" />
+    <EmbeddedResource Include="Resources\RegularEmulator\steam_api.dll" LogicalName="AchievementSync.Core.RegularEmulator.steam_api.dll" />
+    <EmbeddedResource Include="Resources\RegularEmulator\steam_api64.dll" LogicalName="AchievementSync.Core.RegularEmulator.steam_api64.dll" />
+    <EmbeddedResource Include="Resources\ColdLoaderTemplate\coldloader.dll" LogicalName="AchievementSync.Core.ColdLoaderTemplate.coldloader.dll" />
+    <EmbeddedResource Include="Resources\ColdLoaderTemplate\version.dll" LogicalName="AchievementSync.Core.ColdLoaderTemplate.version.dll" />
+    <EmbeddedResource Include="Resources\ColdLoaderTemplate\coldloader.ini" LogicalName="AchievementSync.Core.ColdLoaderTemplate.coldloader.ini" />
+    <EmbeddedResource Include="Resources\uplay-steam.json" LogicalName="AchievementSync.Core.Resources.uplay-steam.json" />
+    <EmbeddedResource Include="Resources\achievement-bit-maps\steam\39140.json" LogicalName="AchievementSync.Core.Resources.achievement-bit-maps.steam.39140.json" />
+    <EmbeddedResource Include="Resources\UplayR1Template\upc_r1.ini" LogicalName="AchievementSync.Core.UplayR1Template.upc_r1.ini" />
+    <EmbeddedResource Include="Resources\UplayR1Template\upc_r1_loader.dll" LogicalName="AchievementSync.Core.UplayR1Template.upc_r1_loader.dll" />
+    <EmbeddedResource Include="Resources\UplayR1Template\upc_r1_loader64.dll" LogicalName="AchievementSync.Core.UplayR1Template.upc_r1_loader64.dll" />
+    <EmbeddedResource Include="Resources\UplayR1Template\uplay_r1.ini" LogicalName="AchievementSync.Core.UplayR1Template.uplay_r1.ini" />
+    <EmbeddedResource Include="Resources\UplayR1Template\uplay_r1_loader.dll" LogicalName="AchievementSync.Core.UplayR1Template.uplay_r1_loader.dll" />
+    <EmbeddedResource Include="Resources\UplayR1Template\uplay_r1_loader64.dll" LogicalName="AchievementSync.Core.UplayR1Template.uplay_r1_loader64.dll" />
+    <EmbeddedResource Include="Resources\UplayR2Template\achievements_schema_example.json" LogicalName="AchievementSync.Core.UplayR2Template.achievements_schema_example.json" />
+    <EmbeddedResource Include="Resources\UplayR2Template\upc_r2.ini" LogicalName="AchievementSync.Core.UplayR2Template.upc_r2.ini" />
+    <EmbeddedResource Include="Resources\UplayR2Template\upc_r2_loader.dll" LogicalName="AchievementSync.Core.UplayR2Template.upc_r2_loader.dll" />
+    <EmbeddedResource Include="Resources\UplayR2Template\upc_r2_loader64.dll" LogicalName="AchievementSync.Core.UplayR2Template.upc_r2_loader64.dll" />
+    <EmbeddedResource Include="Resources\UplayR2Template\uplay_r2.ini" LogicalName="AchievementSync.Core.UplayR2Template.uplay_r2.ini" />
+    <EmbeddedResource Include="Resources\UplayR2Template\uplay_r2_loader.dll" LogicalName="AchievementSync.Core.UplayR2Template.uplay_r2_loader.dll" />
+    <EmbeddedResource Include="Resources\UplayR2Template\uplay_r2_loader64.dll" LogicalName="AchievementSync.Core.UplayR2Template.uplay_r2_loader64.dll" />
+    <EmbeddedResource Include="Resources\EpicTemplate\EOSSDK-Win64-Shipping.dll" LogicalName="AchievementSync.Core.EpicTemplate.EOSSDK-Win64-Shipping.dll" />
+    <EmbeddedResource Include="Resources\EpicTemplate\EOSSDK-Win32-Shipping.dll" LogicalName="AchievementSync.Core.EpicTemplate.EOSSDK-Win32-Shipping.dll" />
+    <EmbeddedResource Include="Resources\EpicTemplate\NemirtingasEpicEmu.json" LogicalName="AchievementSync.Core.EpicTemplate.NemirtingasEpicEmu.json" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\Galaxy.dll" LogicalName="AchievementSync.Core.UniverseLanTemplate.Galaxy.dll" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\Galaxy64.dll" LogicalName="AchievementSync.Core.UniverseLanTemplate.Galaxy64.dll" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANServer.exe" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANServer.exe" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANServer64.exe" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANServer64.exe" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLAN.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLAN.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANData\Achievements.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANData.Achievements.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANData\Config.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANData.Config.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANData\DLC.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANData.DLC.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANData\Stats.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANData.Stats.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANData\UserData.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANData.UserData.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANData\Avatars\files\me.png" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANData.Avatars.files.me.png" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANServerData\Config.ini" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANServerData.Config.ini" />
+    <EmbeddedResource Include="Resources\UniverseLanTemplate\UniverseLANServerData\Avatars\me.png" LogicalName="AchievementSync.Core.UniverseLanTemplate.UniverseLANServerData.Avatars.me.png" />
+    <EmbeddedResource Include="Resources\EaOriginTemplate\anadius64.dll" LogicalName="AchievementSync.Core.EaOriginTemplate.anadius64.dll" />
+    <EmbeddedResource Include="Resources\EaOriginTemplate\anadius32.dll" LogicalName="AchievementSync.Core.EaOriginTemplate.anadius32.dll" />
+    <EmbeddedResource Include="Resources\EaOriginTemplate\anadius64online.dll" LogicalName="AchievementSync.Core.EaOriginTemplate.anadius64online.dll" />
+    <EmbeddedResource Include="Resources\EaOriginTemplate\anadius32online.dll" LogicalName="AchievementSync.Core.EaOriginTemplate.anadius32online.dll" />
+    <EmbeddedResource Include="Resources\EaOriginTemplate\data.yaml" LogicalName="AchievementSync.Core.EaOriginTemplate.data.yaml" />
+  </ItemGroup>
+
+</Project>

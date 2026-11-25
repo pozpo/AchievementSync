@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup Condition="'$(UsePrebuiltProjectReferences)' != 'true'">
+    <ProjectReference Include="..\..\src\AchievementSync.Core\AchievementSync.Core.csproj" />
+    <ProjectReference Include="..\..\src\AchievementSync.Desktop\AchievementSync.Desktop.csproj" />
+  </ItemGroup>
+
+  <!-- The local .NET SDK image can omit workload resolver locator directories for nested WPF project references.
+       This opt-in path runs the same smoke checks against assemblies built immediately beforehand. -->
+  <ItemGroup Condition="'$(UsePrebuiltProjectReferences)' == 'true'">
+    <Reference Include="AchievementSync.Core">
+      <HintPath>..\..\src\AchievementSync.Desktop\bin\$(Configuration)\net10.0-windows\$(RuntimeIdentifier)\AchievementSync.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="AchievementSync.Desktop">
+      <HintPath>..\..\src\AchievementSync.Desktop\bin\$(Configuration)\net10.0-windows\$(RuntimeIdentifier)\AchievementSync.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Management">
+      <HintPath>..\..\src\AchievementSync.Desktop\bin\$(Configuration)\net10.0-windows\$(RuntimeIdentifier)\System.Management.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+</Project>

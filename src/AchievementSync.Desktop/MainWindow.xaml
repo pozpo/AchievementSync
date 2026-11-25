@@ -1,0 +1,318 @@
+<Window x:Class="AchievementSync.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AchievementSync" Icon="pack://application:,,,/Assets/AchievementSync.ico" Width="1200" Height="800" MinWidth="900" MinHeight="600"
+        WindowStyle="SingleBorderWindow" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" WindowState="Normal"
+        UseLayoutRounding="True" SnapsToDevicePixels="True" AllowsTransparency="False" Background="Transparent">
+    <Grid Background="{StaticResource CanvasBrush}">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="248"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Background="{StaticResource SidebarBrush}" BorderBrush="#1C2430" BorderThickness="0,0,1,0">
+            <DockPanel Margin="20,24,18,20">
+                <StackPanel DockPanel.Dock="Top">
+                    <StackPanel Orientation="Horizontal" Margin="5,0,0,38" Visibility="{Binding GitHubAccountVisibility}">
+                        <Border Width="38" Height="38" CornerRadius="12" Background="#292447" BorderBrush="#5045A2" BorderThickness="1" ClipToBounds="True">
+                            <Grid>
+                                <TextBlock Text="✦" Foreground="#B3A9FF" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                <Image Source="{Binding GitHubAvatarImage}" Stretch="UniformToFill"/>
+                            </Grid>
+                        </Border>
+                        <StackPanel Margin="12,1,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="GITHUB" FontSize="10" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Text="{Binding GitHubDisplayName}" FontSize="13" FontWeight="SemiBold" MaxWidth="150" TextTrimming="CharacterEllipsis" ToolTip="{Binding GitHubDisplayName}"/>
+                        </StackPanel>
+                    </StackPanel>
+                    <TextBlock Text="WORKSPACE" FontSize="10" FontWeight="SemiBold" Foreground="#667386" Margin="12,0,0,10"/>
+                    <Button Style="{StaticResource NavigationButton}" Command="{Binding NavigationCommand}" CommandParameter="Games" Margin="0,0,0,5"><StackPanel Orientation="Horizontal"><TextBlock Text="▦" FontSize="17" Width="29"/><TextBlock Text="Game library" VerticalAlignment="Center"/></StackPanel></Button>
+                    <Button Style="{StaticResource NavigationButton}" Command="{Binding NavigationCommand}" CommandParameter="Platforms" Margin="0,0,0,5"><StackPanel Orientation="Horizontal"><TextBlock Text="◎" FontSize="17" Width="29"/><TextBlock Text="Platforms" VerticalAlignment="Center"/></StackPanel></Button>
+                    <Button Style="{StaticResource NavigationButton}" Command="{Binding NavigationCommand}" CommandParameter="Activity" Margin="0,0,0,5"><StackPanel Orientation="Horizontal"><TextBlock Text="◷" FontSize="17" Width="29"/><TextBlock Text="Sync activity" VerticalAlignment="Center"/></StackPanel></Button>
+                    <Button Style="{StaticResource NavigationButton}" Command="{Binding OpenEnablerWizardCommand}" Margin="0,0,0,5"><StackPanel Orientation="Horizontal"><TextBlock Text="⚡" FontSize="17" Width="29"/><TextBlock Text="Achievement Enabler" VerticalAlignment="Center"/></StackPanel></Button>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Bottom">
+                    <Button Style="{StaticResource NavigationButton}" Command="{Binding NavigationCommand}" CommandParameter="Settings"><StackPanel Orientation="Horizontal"><TextBlock Text="⚙" FontSize="16" Width="29"/><TextBlock Text="Settings" VerticalAlignment="Center"/></StackPanel></Button>
+                    <TextBlock Text="ACHIEVEMENTSYNC" FontSize="9" Foreground="#566174" Margin="12,19,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Grid Grid.Column="1" Margin="34,26,36,28">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Grid Grid.Row="0" Margin="0,0,0,24">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="{Binding LastScanText}" FontSize="11" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Right"/><TextBlock Text="{Binding ScanStatus}" FontSize="11" HorizontalAlignment="Right" Margin="0,4,0,0"/></StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1">
+                <Grid Visibility="{Binding IsGamesVisible, Converter={StaticResource BoolToVisibility}}">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <UniformGrid Grid.Row="1" Columns="4" Margin="0,0,0,22">
+                        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,10,0"><StackPanel><TextBlock Text="GAMES FOUND" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding TotalGames}" FontSize="25" FontWeight="SemiBold" Margin="0,7,0,0"/><TextBlock Text="Across enabled locations" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/></StackPanel></Border>
+                        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="4,0,6,0"><StackPanel><TextBlock Text="KNOWN STATES" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding TotalKnownAchievements}" FontSize="25" FontWeight="SemiBold" Margin="0,7,0,0"/><TextBlock Text="Player states in local profiles" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/></StackPanel></Border>
+                        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="6,0,4,0"><StackPanel><TextBlock Text="UNLOCKED" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding TotalUnlocked}" FontSize="25" FontWeight="SemiBold" Foreground="{StaticResource MintBrush}" Margin="0,7,0,0"/><TextBlock Text="Confirmed unlocks" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/></StackPanel></Border>
+                        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="10,0,0,0"><StackPanel><TextBlock Text="COMPLETION" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding CompletionText}" FontSize="25" FontWeight="SemiBold" Margin="0,7,0,0"/><TextBlock Text="{Binding CompletionCoverageText}" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/></StackPanel></Border>
+                    </UniformGrid>
+
+
+                    <Grid Grid.Row="3" Visibility="{Binding IsGamesVisible, Converter={StaticResource BoolToVisibility}}">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="0,0,0,13"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="250"/><ColumnDefinition Width="155"/><ColumnDefinition Width="135"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your game library" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="Browse games found in enabled achievement folders. Filter by progress or sort by name and recent unlock." FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/></StackPanel><TextBox Grid.Column="1" Style="{StaticResource SearchBox}" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" ToolTip="Search game title or AppID"/><ComboBox Grid.Column="2" ItemsSource="{Binding GameFilterOptions}" SelectedItem="{Binding SelectedGameFilter}" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip="Filter games"/><ComboBox Grid.Column="3" ItemsSource="{Binding GameSortOptions}" SelectedItem="{Binding SelectedGameSort}" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip="Sort games"/></Grid>
+                        <Grid Grid.Row="1">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsControl ItemsSource="{Binding GamesView}">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Command="{Binding DataContext.OpenGameCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Style="{StaticResource GameCardButton}" Padding="0" Margin="0,0,14,15" HorizontalContentAlignment="Stretch" Cursor="Hand">
+                                                <Border Style="{StaticResource GameCardSurface}" Padding="13">
+                                                    <StackPanel>
+                                                        <Border Height="145" CornerRadius="11" BorderBrush="#303951" BorderThickness="1" ClipToBounds="True"><Grid><Grid.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#282546" Offset="0"/><GradientStop Color="#192A36" Offset="1"/></LinearGradientBrush></Grid.Background><Ellipse Width="150" Height="150" Stroke="#7667F4" StrokeThickness="1" Opacity="0.15" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-35,-50"/><Ellipse Width="102" Height="102" Stroke="#A89FFF" StrokeThickness="1" Opacity="0.18" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-12,-24"/><Image Source="{Binding Artwork}" Stretch="UniformToFill"/><TextBlock Text="{Binding CoverMark}" Visibility="{Binding FallbackVisibility}" FontSize="35" FontWeight="Light" Foreground="#D9D5FF" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border Background="#0D1119" Opacity="0.88" CornerRadius="7" Padding="8,4" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"><StackPanel Orientation="Horizontal"><TextBlock Text="APPID" FontSize="9" FontWeight="Bold" Foreground="#AEB8C9"/><TextBlock Text="{Binding AppId}" FontSize="9" FontWeight="Bold" Foreground="#D9D5FF" Margin="5,0,0,0"/></StackPanel></Border></Grid></Border>
+                                                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Margin="2,13,2,0" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{StaticResource MintBrush}" Margin="2,7,2,0"/><ProgressBar Minimum="0" Maximum="100" Value="{Binding Progress, Mode=OneWay}" Visibility="{Binding HasMeasurableProgress, Converter={StaticResource BoolToVisibility}}" Height="5" Margin="2,9,2,0" Background="#2A3240" Foreground="#69D9B3" BorderThickness="0"/><TextBlock Text="{Binding AchievementCountText}" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="2,8,2,0"/><TextBlock Text="{Binding PlaytimeText}" Visibility="{Binding PlaytimeVisibility, Converter={StaticResource BoolToVisibility}}" FontSize="10" Foreground="#B8AEFF" Margin="2,8,2,0"/><TextBlock Text="{Binding RecentAchievementText}" FontSize="10" Foreground="#A6B0C0" Margin="2,9,2,0" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding SourceCountText}" FontSize="9" Foreground="#68758A" Margin="2,9,2,0"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                            <Border Background="#111721" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="15" Padding="28" HorizontalAlignment="Stretch" VerticalAlignment="Top" Visibility="{Binding IsGameResultsEmpty, Converter={StaticResource BoolToVisibility}}"><StackPanel HorizontalAlignment="Center" MaxWidth="620"><TextBlock Text="⌕" FontSize="34" Foreground="#8F83FF" HorizontalAlignment="Center"/><ProgressBar IsIndeterminate="True" Width="180" Height="4" Foreground="#8F83FF" Background="#273141" BorderThickness="0" Margin="0,2,0,8" Visibility="{Binding IsScanning, Converter={StaticResource BoolToVisibility}}"/><TextBlock Text="{Binding GameResultsEmptyText}" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,6,0,0" TextAlignment="Center" TextWrapping="Wrap"/><TextBlock Text="{Binding GameResultsEmptyHint}" FontSize="12" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" TextAlignment="Center" LineHeight="19" Margin="0,8,0,0"/></StackPanel></Border>
+                        </Grid>
+                        <TextBlock Text="{Binding IssueText}" Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Right" Foreground="{StaticResource WarningBrush}" FontSize="10" Margin="0,0,8,0"/>
+                    </Grid>
+
+                </Grid>
+
+                <Grid Visibility="{Binding IsSettingsVisible, Converter={StaticResource BoolToVisibility}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Margin="0,0,0,19"><TextBlock Text="Settings" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="Choose which locations AchievementSync scans. Missing folders remain listed as unavailable." FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0"/></StackPanel>
+                    <Border Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,0,0,14">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel>
+                            <CheckBox Content="Show achievement unlock notifications" IsChecked="{Binding AchievementNotificationsEnabled, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="12"/>
+                            <CheckBox Content="Show game launch &amp; playtime notifications" IsChecked="{Binding PlaytimeNotificationsEnabled, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="12" Margin="0,9,0,0"/>
+                            <CheckBox Content="Start AchievementSync with Windows (opens in the tray)" IsChecked="{Binding StartWithWindows, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="12" Margin="0,9,0,0"/>
+                            <TextBlock Text="{Binding StartupStatus}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="22,5,0,0" TextWrapping="Wrap"/>
+                            <TextBlock Text="If you move AchievementSync.exe, open it once from the new folder so Windows can save the new startup path." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="22,3,0,0" TextWrapping="Wrap"/>
+                            <CheckBox Content="Handheld PC Mode (Compact UI for Steam Deck / ROG Ally)" IsChecked="{Binding CompactModeEnabled, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="12" Margin="0,9,0,0" ToolTip="Scales down window bounds and toast notifications to fit handheld screens without cutting off."/>
+                            <Border Background="#10151D" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="0,12,0,0">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                    <TextBlock Text="APPLICATION UPDATES" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+                                    <Grid Grid.Row="1" Margin="0,7,0,0">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding UpdateStatus}" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Button Content="Check now" Command="{Binding CheckForUpdatesCommand}" IsEnabled="{Binding CanCheckForUpdates}" Style="{StaticResource QuietButton}" Padding="10,7" Margin="0,0,6,0"/>
+                                            <Button Content="{Binding AvailableUpdateVersion}" Command="{Binding InstallUpdateCommand}" IsEnabled="{Binding CanInstallUpdate}" Visibility="{Binding HasAvailableUpdate, Converter={StaticResource BoolToVisibility}}" Style="{StaticResource PrimaryButton}" Padding="10,7"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </StackPanel><Button Grid.Column="1" Content="Test notification" Command="{Binding TestNotificationCommand}" Style="{StaticResource QuietButton}" VerticalAlignment="Center" Padding="14,9" ToolTip="Shows a local preview only; no achievement data is changed."/></Grid>
+                    </Border>
+                    <Border Grid.Row="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,0,0,14">
+                        <StackPanel>
+                            <TextBlock Text="ACHIEVEMENT NOTIFICATION POSITION &amp; SOUND" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,3"/>
+                            <TextBlock Text="Position, offsets, sound, and display selection apply to unlock toasts. Game session banners center on the active game screen." FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,9"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Position" Foreground="{StaticResource TextBrush}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                        <ComboBox ItemsSource="{Binding NotificationPositionOptions}" DisplayMemberPath="Label" SelectedValuePath="Code" SelectedValue="{Binding NotificationPosition}" Width="150" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                        <TextBlock Text="Offset X" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <TextBox Text="{Binding NotificationOffsetX, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource SearchBox}" Width="64" Height="32" Padding="8,6" VerticalAlignment="Center"/>
+                                        <TextBlock Text="Offset Y" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" Margin="14,0,6,0"/>
+                                        <TextBox Text="{Binding NotificationOffsetY, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource SearchBox}" Width="64" Height="32" Padding="8,6" VerticalAlignment="Center"/>
+                                        <TextBlock Text="px" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                    <CheckBox Content="Play a sound when an achievement is unlocked" IsChecked="{Binding NotificationSoundEnabled, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="12" Margin="0,11,0,0"/>
+                                    <CheckBox Content="Auto-detect which screen you are playing on" IsChecked="{Binding AutoDetectActiveGameScreen, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="12" Margin="0,9,0,0" ToolTip="Automatically pops up the unlock toast on the exact monitor running your active game."/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                        <TextBlock Text="Sound" Foreground="{StaticResource TextBrush}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                        <ComboBox ItemsSource="{Binding NotificationSoundOptions}" DisplayMemberPath="Label" SelectedValuePath="Code" SelectedValue="{Binding NotificationSound}" Width="175" VerticalAlignment="Center"/>
+                                        <Button Content="Choose…" Command="{Binding BrowseNotificationSoundCommand}" IsEnabled="{Binding CanBrowseNotificationSound}" Visibility="{Binding CanBrowseNotificationSound, Converter={StaticResource BoolToVisibility}}" Style="{StaticResource QuietButton}" Padding="9,6" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center" ToolTip="Pick any .wav file from your PC as the achievement sound"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding NotificationSoundCustomPath}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="64,4,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding NotificationSoundCustomPath}" Visibility="{Binding CanBrowseNotificationSound, Converter={StaticResource BoolToVisibility}}"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <TextBlock Text="Volume" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <Slider Minimum="0" Maximum="100" Value="{Binding NotificationSoundVolume}" Width="140" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding NotificationSoundVolume, StringFormat={}{0}%}" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0" Width="36"/>
+                                    </StackPanel>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="16,0,0,0">
+                                    <Button Content="Preview notification" Command="{Binding TestNotificationCommand}" Style="{StaticResource QuietButton}" Padding="14,9" ToolTip="Shows a local preview at the selected position; no achievement data is changed."/>
+                                    <Button Content="Preview sound" Command="{Binding PreviewNotificationSoundCommand}" Style="{StaticResource QuietButton}" Padding="14,9" Margin="0,8,0,0" ToolTip="Plays the achievement chime once; nothing is unlocked."/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                    <Grid Grid.Row="3" Margin="0,0,0,13"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Achievement locations" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Recursive scanning is read-only and does not modify source files." FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/></StackPanel><Button Grid.Column="1" Style="{StaticResource QuietButton}" Click="AddFolder_Click" VerticalAlignment="Center"><StackPanel Orientation="Horizontal"><TextBlock Text="＋" FontSize="15" Margin="0,-2,6,0"/><TextBlock Text="Add folder"/></StackPanel></Button></Grid>
+                    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding Locations}">
+                            <ItemsControl.ItemTemplate><DataTemplate>
+                                <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,8">
+                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <CheckBox IsChecked="{Binding IsEnabled, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="1,0,14,0"/>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="{Binding Path}" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}"/><TextBlock Text="{Binding DiscoveryText}" FontSize="10" Foreground="#77849A" Margin="0,4,0,0"/></StackPanel>
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="15,0,0,0"><Ellipse Width="7" Height="7" Fill="#69758A" VerticalAlignment="Center" Margin="0,0,7,0"><Ellipse.Style><Style TargetType="Ellipse"><Setter Property="Fill" Value="#69758A"/><Style.Triggers><DataTrigger Binding="{Binding IsAvailable}" Value="True"><Setter Property="Fill" Value="#72E0BB"/></DataTrigger></Style.Triggers></Style></Ellipse.Style></Ellipse><TextBlock Text="{Binding AvailabilityText}" FontSize="10" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/><Button Content="Remove" Visibility="{Binding IsCustom, Converter={StaticResource BoolToVisibility}}" Command="{Binding DataContext.RemoveLocationCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Style="{StaticResource QuietButton}" Padding="9,6" FontSize="10" Margin="12,0,0,0"/></StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate></ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    </Grid>
+                    </ScrollViewer>
+                </Grid>
+
+                <Grid Visibility="{Binding IsActivityVisible, Converter={StaticResource BoolToVisibility}}">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Sync activity" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="Preview and push numeric Steam AppID progress, or manage confirmed save backups and restores." FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0" TextWrapping="Wrap"/></StackPanel></Grid>
+                    <Border Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,12">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="210"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <StackPanel  Grid.RowSpan="2" VerticalAlignment="Center" Margin="2,0,12,0"><TextBlock Text="GITHUB ACCOUNT" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding GitHubAccountText}" FontSize="12" FontWeight="SemiBold" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding GitHubStatus}" FontSize="10" Foreground="#AAB5C5" TextWrapping="Wrap" Margin="0,5,0,0" MaxWidth="205"/></StackPanel>
+                            <Grid Grid.Column="1" Grid.Row="0" VerticalAlignment="Center" Margin="8,0,14,4"><Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="0.8*"/></Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,8,0"><TextBlock Text="OWNER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"/><TextBox Text="{Binding GitHubOwner, UpdateSourceTrigger=LostFocus}" Style="{StaticResource SearchBox}" Height="34" Padding="9,6" ToolTip="Your GitHub account name"/></StackPanel>
+                                <StackPanel Grid.Column="1" Margin="0,0,8,0"><TextBlock Text="REPOSITORY" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"/><TextBox Text="{Binding GitHubRepository, UpdateSourceTrigger=LostFocus}" Style="{StaticResource SearchBox}" Height="34" Padding="9,6" ToolTip="Your achievement-viewer fork"/></StackPanel>
+                                <StackPanel Grid.Column="2"><TextBlock Text="BRANCH" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"/><TextBox Text="{Binding GitHubBranch, UpdateSourceTrigger=LostFocus}" Style="{StaticResource SearchBox}" Height="34" Padding="9,6" ToolTip="For example: user"/></StackPanel>
+                            </Grid>
+                            <StackPanel Grid.Column="1" Grid.Row="1" Margin="8,2,0,0">
+                                <CheckBox Content="Automatically push newly unlocked achievements to GitHub (enabled explicitly)" IsChecked="{Binding AutoSyncAfterUnlock, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource MutedBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,4,0,0" ToolTip="Pushes only the newly changed AppID file to your configured repository whenever a genuinely new unlock is detected. Disabled by default."/>
+                                <TextBlock Text="{Binding AutoSyncStatus}" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0" TextWrapping="Wrap" MaxWidth="265" Visibility="{Binding AutoSyncStatusVisibility}"/>
+                            </StackPanel>
+                            <Grid Grid.Column="2" Grid.RowSpan="2" VerticalAlignment="Center" SnapsToDevicePixels="True">
+                                <StackPanel Width="195">
+                                    <TextBlock Text="PERSONAL ACCESS TOKEN" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="3,0,0,4"/>
+                                    <PasswordBox x:Name="GitHubTokenBox" Style="{StaticResource SecretBox}" Height="34" Padding="8,5" ToolTip="Classic GitHub token with public_repo scope; checked once and stored in Windows Credential Manager"/>
+                                    <Button Content="Connect with token" Click="ConnectGitHubWithToken_Click" Style="{StaticResource QuietButton}" Padding="10,7" Margin="3,5,3,2"/>
+                                    <Button Content="Sign in with OAuth" Command="{Binding SignInToGitHubCommand}" IsEnabled="{Binding CanStartGitHubSignIn}" Style="{StaticResource QuietButton}" Padding="10,7" Margin="3,2" ToolTip="Sign in with the configured GitHub OAuth application."/>
+                                    <Button Content="Disconnect" Command="{Binding DisconnectGitHubCommand}" IsEnabled="{Binding IsGitHubSignedIn}" Style="{StaticResource QuietButton}" Padding="10,7" Margin="3,2" ToolTip="Remove the saved GitHub credential from Windows Credential Manager."/>
+                                    <Button Content="Sync all metadata" Command="{Binding SyncAllMetadataCommand}" IsEnabled="{Binding CanSyncAll}" Style="{StaticResource QuietButton}" Padding="10,7" Margin="3,2" ToolTip="Connect GitHub first. This shows the target and files for confirmation before uploading AppID achievements.json files."/>
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                    <Border Grid.Row="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="290"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Margin="2,0,14,0">
+                                <TextBlock Text="BACKUP &amp; RESTORE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+                                <TextBlock Text="{Binding BackupStatus}" FontSize="10" Foreground="{StaticResource MintBrush}" TextWrapping="Wrap" Margin="0,5,0,4" MaxWidth="272"/>
+                                <CheckBox Content="Auto-back up new and changed saves to GitHub after playtime stops" IsChecked="{Binding AutoBackupSavesAfterPlaytime, UpdateSourceTrigger=PropertyChanged}" Foreground="{StaticResource TextBrush}" FontSize="10" Margin="0,3,0,7" ToolTip="After the tracked game session ends, waits for save files to settle and uploads new or changed files to the connected public GitHub repository. Existing remote files at the same paths are updated. Disabled by default."/>
+                                <Border CornerRadius="3" Background="#1E2634" Height="6" Margin="0,0,0,6" MinWidth="260" ClipToBounds="True" Visibility="{Binding IsBackupRunning, Converter={StaticResource BoolToVisibility}}">
+                                    <ProgressBar Minimum="0" Maximum="100" Value="{Binding BackupProgressPercent, Mode=OneWay}" Background="#1E2634" Foreground="#69D9B3" BorderThickness="0" Height="6"/>
+                                </Border>
+                                <TextBlock Text="{Binding BackupStage}" FontSize="9" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,6" MaxWidth="272" Visibility="{Binding IsBackupRunning, Converter={StaticResource BoolToVisibility}}"/>
+                                <ListBox ItemsSource="{Binding BackupResults}" MaxHeight="88" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListBox.ItemTemplate><DataTemplate><Border Background="#111721" BorderBrush="#293345" BorderThickness="1" CornerRadius="8" Padding="8,7" Margin="0,0,0,4"><TextBlock Text="{Binding}" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"/></Border></DataTemplate></ListBox.ItemTemplate></ListBox>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0">
+                                <Button Content="Backup saves" Command="{Binding BackupSavesCommand}" IsEnabled="{Binding CanBackup}" Style="{StaticResource QuietButton}" Padding="12,8" Margin="0,0,0,6" ToolTip="Connect GitHub first. Discovers game save files in known locations, then shows the files for confirmation before upload."/>
+                                <Button Content="Restore from GitHub" Command="{Binding RestoreSavesCommand}" IsEnabled="{Binding CanRestore}" Style="{StaticResource QuietButton}" Padding="12,8" Margin="0,0,0,0" ToolTip="Connect GitHub first. Fetches the backup and, after confirmation, restores files to their recorded locations."/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Margin="2,0,0,0">
+                                <TextBlock Text="RESTORE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+                                <TextBlock Text="{Binding RestoreStatus}" FontSize="10" Foreground="{StaticResource MintBrush}" TextWrapping="Wrap" Margin="0,5,0,4"/>
+                                <ListBox ItemsSource="{Binding RestoreResults}" MaxHeight="88" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListBox.ItemTemplate><DataTemplate><Border Background="#111721" BorderBrush="#293345" BorderThickness="1" CornerRadius="8" Padding="8,7" Margin="0,0,0,4"><TextBlock Text="{Binding}" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"/></Border></DataTemplate></ListBox.ItemTemplate></ListBox>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <Grid Grid.Row="3"><Grid.ColumnDefinitions><ColumnDefinition Width="360"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="13" Padding="14" Margin="0,0,12,0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Grid.Row="0" Text="FILES IN PREVIEW" FontSize="10" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,10"/><ListBox Grid.Row="1" ItemsSource="{Binding ExportFiles}" SelectedItem="{Binding SelectedExport, Mode=TwoWay}" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListBox.ItemTemplate><DataTemplate><Border Background="#111721" BorderBrush="#293345" BorderThickness="1" CornerRadius="9" Padding="11"><StackPanel><TextBlock Text="{Binding RelativePath}" FontSize="11" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{Binding Summary}" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/></StackPanel></Border></DataTemplate></ListBox.ItemTemplate></ListBox><TextBlock Grid.Row="2" Text="{Binding BulkSyncStatus}" FontSize="10" Foreground="{StaticResource MintBrush}" Margin="2,10,0,6" TextWrapping="Wrap"/><ListBox Grid.Row="3" ItemsSource="{Binding BulkSyncResults}" MaxHeight="130" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListBox.ItemTemplate><DataTemplate><Border Background="#111721" BorderBrush="#293345" BorderThickness="1" CornerRadius="8" Padding="8,7"><TextBlock Text="{Binding}" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"/></Border></DataTemplate></ListBox.ItemTemplate></ListBox></Grid></Border>
+                        <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Border Grid.Row="0" Background="#151D27" BorderBrush="#293345" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding PreviewStatus}" FontSize="11" Foreground="{StaticResource MintBrush}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"/><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="Build preview" Command="{Binding BuildGitHubPreviewCommand}" Style="{StaticResource QuietButton}" Padding="12,8" Margin="0,0,8,0" ToolTip="Fetch the selected repository and prepare the exact files for review."/><Button Content="Push reviewed changes" Command="{Binding PushGitHubPreviewCommand}" Style="{StaticResource PrimaryButton}" Padding="12,8" ToolTip="Uploads only the changes shown in the preview after confirmation."/></StackPanel></Grid></Border><Border Grid.Row="1" Background="#10151D" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="12"><Grid><TextBox Text="{Binding SelectedExport.FormattedJson, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" AcceptsTab="False" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Background="Transparent" BorderThickness="0" Foreground="#D6DFEB" FontFamily="Consolas" FontSize="12" ToolTip="Exact JSON for the selected AppID file (pretty-printed)"/><TextBlock Text="Select a file from the list to inspect its exact JSON. Nothing is uploaded until you push." TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="380" Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False" Visibility="{Binding EmptyExportMessageVisibility}"/></Grid></Border></Grid>
+                    </Grid>
+                </Grid>
+
+                <Grid Visibility="{Binding IsEnablerVisible, Converter={StaticResource BoolToVisibility}}">
+                    <ContentControl x:Name="AchievementEnablerHost" />
+                </Grid>
+
+                <Grid Visibility="{Binding IsPlatformsVisible, Converter={StaticResource BoolToVisibility}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Margin="0,0,0,14"><TextBlock Text="Platforms" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="AchievementSync monitors configured local folders and refreshes platform data when achievement or save files change. Use each platform’s Scan platform button for a manual refresh. GitHub sync exports numeric Steam AppID files; non-Steam snapshots stay local." FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0" TextWrapping="Wrap"/></StackPanel>
+                    <Border Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,12">
+                        <TextBlock Text="{Binding PlatformScanStatus}" FontSize="11" Foreground="{StaticResource MintBrush}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                    </Border>
+                    <Expander Grid.Row="2" Header="Configure source folders and API access" IsExpanded="True" Background="{StaticResource PanelBrush}" Foreground="{StaticResource TextBrush}" Margin="0,0,0,12" Padding="10" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1">
+                        <StackPanel>
+                            <ItemsControl ItemsSource="{Binding PlatformSourceEntries}">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="4">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="112"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Label}" FontSize="10" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBox Grid.Column="1" Text="{Binding Path, UpdateSourceTrigger=LostFocus}" Style="{StaticResource SearchBox}" ToolTip="Source folder path"/>
+                                            <Button Grid.Column="2" Content="Browse…" Command="{Binding BrowseCommand}" Style="{StaticResource QuietButton}" Padding="9,6" Margin="5,0,0,0"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Border Background="#111721" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="4,9,4,0">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                    <Grid Grid.Row="0">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                            <TextBlock Text="RetroAchievements" FontSize="10" FontWeight="SemiBold"/>
+                                            <TextBox Text="{Binding RetroAchievementsUser, UpdateSourceTrigger=LostFocus}" Style="{StaticResource SearchBox}" Margin="0,5,0,0" ToolTip="RetroAchievements username"/>
+                                            <PasswordBox x:Name="RetroAchievementsApiKeyBox" Style="{StaticResource SecretBox}" Margin="0,5,0,0" ToolTip="API key saved only in Windows Credential Manager"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Margin="5,0,10,0">
+                                        <TextBlock Text="Epic Games uses its public catalog API; GOG reads the official Galaxy cache." FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                            <Button Content="Save API key" Click="SavePlatformCredentials_Click" Style="{StaticResource QuietButton}" Padding="10,7" Margin="0,0,0,5"/>
+                                            <Button Content="Clear saved tokens" Click="ClearPlatformCredentials_Click" Style="{StaticResource QuietButton}" Padding="10,7"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Grid.Row="1" Text="{Binding PlatformCredentialStatus}" FontSize="9" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="2,6,0,0"/>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Expander>
+                    <Grid Grid.Row="3" Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel><TextBlock Text="PLATFORM STATUS" FontSize="9" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/></StackPanel>
+                    </Grid>
+                    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding PlatformStatuses}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,8">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <Border Width="40" Height="40" CornerRadius="10" Background="#292447" BorderBrush="#5045A2" BorderThickness="1" Margin="0,0,14,0">
+                                                <TextBlock Text="{Binding Platform, Converter={StaticResource PlatformIconConverter}}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding Hint}" FontSize="10" Foreground="#667386" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="{Binding Hint, Converter={StaticResource StringToVisibility}}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="15,0,0,0" Orientation="Horizontal">
+                                                <TextBlock Text="{Binding GamesFound, StringFormat='Games: {0}'}" FontSize="11" Foreground="{StaticResource MintBrush}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                                <Border Width="8" Height="8" CornerRadius="4" Margin="0,0,8,0" VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border"><Setter Property="Background" Value="#69758A"/>
+                                                            <Style.Triggers><DataTrigger Binding="{Binding IsConfigured}" Value="True"><Setter Property="Background" Value="#72E0BB"/></DataTrigger></Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                </Border>
+                                                <TextBlock Text="{Binding IsConfigured, Converter={StaticResource BoolToConfiguredText}}" FontSize="10" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                                <Button Content="Scan platform" Command="{Binding DataContext.ScanPlatformCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding Platform}" IsEnabled="{Binding DataContext.CanScanPlatform, RelativeSource={RelativeSource AncestorType=ItemsControl}}" Style="{StaticResource QuietButton}" Padding="9,6" ToolTip="Scan this platform’s configured sources"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    </Grid>
+                    </ScrollViewer>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

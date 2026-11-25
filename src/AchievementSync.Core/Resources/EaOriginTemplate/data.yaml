@@ -1,0 +1,388 @@
+# Origin DRM versions
+---
+# other tested games that use even older version of DRM:
+# Battlefield 3
+# Dead Space 2
+# Dragon Age Inquisition
+# Mass Effect 1
+# Mass Effect 2
+# Need For Speed Most Wanted (2015)
+# Titanfall 1
+
+- 4.8.2.128
+# Battlefield Hardline (perfect unwrap*)
+- 4.8.3.555
+# Battlefield 4 CTE x64 (perfect unwrap)
+# Battlefield 4 CTE x86 (perfect unwrap)
+- 4.9.0.202
+# STAR WARS Battlefront 2015 Beta (perfect unwrap)
+
+# .par file gone, content IDs and flags are now in .ooa section
+
+- 4.10.0.680
+# Medal of Honor Pacific Assault (perfect unwrap)
+# The Sims 3 (perfect unwrap*)
+# The Sims 4 Create A Sim Demo (perfect unwrap)
+# Unravel (perfect unwrap*)
+- 4.11.01.275
+# Need for Speed 2015 (perfect unwrap*)
+- 4.11.01.297
+# Mirrors Edge Catalyst (perfect unwrap*)
+- 4.11.02.11
+# Battlefield 4 x64 (perfect unwrap)
+# Battlefield 4 x86 (perfect unwrap)
+- 4.11.03.17
+# FIFA 17 (perfect unwrap*)
+# FIFA 18 (perfect unwrap*)
+# Mass Effect Andromeda (perfect unwrap)
+- 4.11.04.26
+# Battlefield 1 (perfect unwrap*)
+# Jade Empire (perfect unwrap)
+# LIMBO (perfect unwrap*)
+# Mirrors Edge (perfect unwrap)
+# STAR WARS Battlefront 2015 (perfect unwrap*)
+# Syberia 2 (perfect unwrap)
+# The Saboteur (perfect unwrap*)
+- 4.11.05.64
+# INSIDE (perfect unwrap)
+# Mad Games Tycoon (perfect unwrap)
+# Medal of Honor Airborne (perfect unwrap)
+# Need for Speed Payback (perfect unwrap*)
+# Need for Speed Shift 2 Unleashed (perfect unwrap*)
+# Spore (perfect unwrap*)
+# Spore Creature Creator (NOT_TESTED_YET)
+# STAR WARS Battlefront II 2017 (perfect unwrap*)
+# STAR WARS Squadrons (perfect unwrap*)
+# The Surge (perfect unwrap)
+- 5.00.01.35
+# Crysis (perfect unwrap*)
+# SteamWorld Dig (perfect unwrap*)
+# The Sims 2 (perfect unwrap)
+# Titanfall 2 (perfect unwrap)
+- 5.01.00.39
+# Burnout Paradise (perfect unwrap*)
+# Command & Conquer Red Alert 3 Uprising (perfect unwrap*)
+# Dead Space (perfect unwrap)
+- 5.01.01.42
+# Fe (perfect unwrap*)
+# NOX (perfect unwrap)
+
+# gap after garbage data shorter by 1 byte
+
+- 5.01.03.52
+# A Way Out (perfect unwrap*)
+# Crashlands (perfect unwrap*)
+# Fran Bow (perfect unwrap*)
+# Ghost of a Tale (perfect unwrap)
+# Gone Home (perfect unwrap)
+# Halcyon 6 Lightspeed Edition (perfect unwrap)
+# Shadow Tactics Blades of the Shogun (perfect unwrap)
+# Unravel Two (perfect unwrap*)
+- 5.02.00.58
+# Battlefield V Open Beta (perfect unwrap*)
+# Burnout Paradise Remastered (perfect unwrap*)
+# FIFA 19 (perfect unwrap*)
+- 5.02.01.62
+# Farmers Dynasty (perfect unwrap)
+- 5.02.02.64
+# Cosmic Star Heroine (perfect unwrap)
+# Hyper Light Drifter (perfect unwrap*)
+# Plants vs Zombies Garden Warfare 2 (perfect unwrap)
+# The Solus Project (perfect unwrap*)
+- 5.02.03.65
+# Dungeons 3 (perfect unwrap*)
+# Hand of Fate (perfect unwrap)
+# Project Highrise (perfect unwrap)
+# Sudden Strike 4 (perfect unwrap)
+# Turmoil (perfect unwrap*)
+- 5.02.04.66
+# Anthem (perfect unwrap*)
+# Apex Legends (perfect unwrap)
+# Battlefield V (perfect unwrap*)
+# Beholder 2 (perfect unwrap)
+# Breathedge (perfect unwrap*)
+# FIFA 20 (perfect unwrap*)
+# Frostpunk (perfect unwrap)
+# FTL Faster Than Light (NOT a perfect unwrap)
+# Into the Breach (perfect unwrap)
+# Judgment Apocalypse Survival Simulation (perfect unwrap)
+# Need for Speed Heat (perfect unwrap*)
+# Plants vs Zombies Battle for Neighborville (perfect unwrap)
+# Sea of Solitude (perfect unwrap*)
+# STAR WARS Battlefront 2004 (perfect unwrap*)
+# STAR WARS Battlefront II 2005 (perfect unwrap)
+# STAR WARS Empire at War (perfect unwrap*)
+# STAR WARS Empire at War Forces of Corruption (perfect unwrap*)
+# STAR WARS Episode I Racer (perfect unwrap)
+# STAR WARS Galactic Battlegrounds Saga (perfect unwrap*)
+# STAR WARS Jedi Fallen Order (perfect unwrap)
+# STAR WARS Jedi Knight Jedi Academy (perfect unwrap)
+# STAR WARS Jedi Knight Mysteries of the Sith (perfect unwrap*)
+# STAR WARS Knights of the Old Republic (perfect unwrap*)
+# STAR WARS Knights of the Old Republic II - The Sith Lords (perfect unwrap)
+# STAR WARS Republic Commando (perfect unwrap*)
+# STAR WARS The Force Unleashed (perfect unwrap)
+# STAR WARS The Force Unleashed II (perfect unwrap*)
+# STAR WARS X-Wing Alliance (perfect unwrap)
+# The Bards Tale Trilogy (perfect unwrap)
+# Warhammer 40000 Mechanicus (perfect unwrap)
+- 5.02.06.70
+# AO Tennis 2 (perfect unwrap)
+# Autonauts (perfect unwrap)
+# BIOMUTANT (perfect unwrap*)
+# Conan Chop Chop (perfect unwrap)
+# Dead Cells (perfect unwrap*)
+# Endless Legend (perfect unwrap)
+# Kingdoms of Amalur Re-Reckoning (perfect unwrap)
+# Madden NFL 20 (perfect unwrap*)
+# Madden NFL 21 (perfect unwrap*)
+# Northgard (perfect unwrap*)
+# Sonic Mania (perfect unwrap)
+# The Sinking City (perfect unwrap*)
+# The Surge 2 (perfect unwrap)
+# Two Point Hospital (perfect unwrap)
+- 5.02.08.75
+# Command & Conquer Remastered Collection (perfect unwrap)
+# FIFA 21 (perfect unwrap*)
+# Mass Effect Legendary Edition ME1 (perfect unwrap)
+# Mass Effect Legendary Edition ME2 (perfect unwrap)
+# Mass Effect Legendary Edition ME3 (perfect unwrap)
+# Need for Speed Hot Pursuit Remastered (perfect unwrap*)
+# Rocket Arena (perfect unwrap)
+- 5.02.11.79
+# Crysis 3 (perfect unwrap*)
+# Dead in Bermuda (perfect unwrap)
+- 5.02.11.94
+# The Sims 4 (perfect unwrap*)
+# The Sims 4 Legacy Edition (perfect unwrap)
+- 5.02.13.81
+# It Takes Two (perfect unwrap)
+# It Takes Two Friend's Pass (perfect unwrap)
+
+# added 0x100 unknown bytes before encrypted sections info
+
+- 5.02.15.89
+# Crysis Remastered (perfect unwrap)
+- 5.02.15.92
+# Alice Madness Returns (perfect unwrap)
+# Battlefield 2042 (perfect unwrap*)
+# Dead Space (2023) (perfect unwrap*)
+# FIFA 22 (perfect unwrap*)
+# Lost in Random (perfect unwrap*)
+# Madden NFL 22 (perfect unwrap*)
+# Madden NFL 23 (perfect unwrap*)
+# MySims (perfect unwrap)
+# Need for Speed Unbound (perfect unwrap*)
+# Super Mega Baseball 3 (perfect unwrap)
+- 5.02.15.103
+# F1 22 (perfect unwrap*)
+# GRID Legends (perfect unwrap*)
+- 5.02.15.107
+# Crysis 2 Remastered (perfect unwrap)
+# Crysis 3 Remastered (perfect unwrap)
+# EA SPORTS FIFA 23 (perfect unwrap*)
+# WILD HEARTS (perfect unwrap*)
+- 5.02.17.127
+# EA SPORTS WRC (perfect unwrap*)
+# EA SPORTS Madden NFL 25 (perfect unwrap*)
+# F1 23 (perfect unwrap*)
+# Immortals of Aveum (perfect unwrap*)
+# Madden NFL 24 (perfect unwrap*)
+# PGA Tour (2023) (perfect unwrap*)
+# STAR WARS Jedi Survivor (perfect unwrap*)
+- 5.02.19.131
+# Battlefield 6 (perfect unwrap)
+- 5.02.19.133
+# EA SPORTS FC 24 (perfect unwrap*)
+# EA SPORTS FC 25 (perfect unwrap*)
+# The Sims 1 Legacy Collection (not perfect, but exe works)
+# The Sims 2 Legacy Collection (not perfect, but exe works)
+- 5.02.19.138
+# F1 25 (perfect unwrap*)
+- 5.02.20.136
+# F1 24 (perfect unwrap*)
+# Skate (perfect unwrap*)
+# Tales of Kenzera ZAU (perfect unwrap)
+
+# * unwrapped exe is identical to manually unwrapped one
+#   only after trimming sections
+
+# 4.x use OOA476 machine ID algorithm
+# 5.x use OOA500 machine ID algorithm
+# this makes no difference in the unwrapping
+...
+
+
+
+# Decryption Keys
+---
+1028663:               rNwirefJW+HyzCjrI3ZQ1w== # A Way Out
+1028663_oa:            JHfKf+6KTMj77fg15tE1UA== # A Way Out friend's pass
+alice2_dd:             z4ipJfclVLS4pbigiceQZg== # Alice Madness Returns
+1034365:               jeyXsDLxk+jE2oaLFccbZg== # Anthem
+198299:                nupZ8oNXsW1gFJnne8y2/Q== # AO Tennis 2
+194908:                +Y6O0GdX+8HOU+dSjhvtQg== # Apex Legends
+198309:                PW56oPDozL614cBKUi6aYQ== # Autonauts
+1026023:               xHc6fzowAMvtuT+kdQelCQ== # Battlefield 1
+1026023_oa:            MdZWQL7GjvqKN2FaQATOWw== # Battlefield 1 Trial
+1022379:               JpQ/IpIb1Zbcp2X/FmBwIw== # Battlefield 4 CTE x64/x86
+1007968:               Ugc6h55XJX3DqxmsCJG/Iw== # Battlefield 4 x64/x86
+16426154:              Dz8eC8XA4kl50eZLAriaNg== # Battlefield 6
+193874:                N+O2gh4JbozfRdvPbQLOoA== # Battlefield 2042
+1013920:               hA5W17bA4xF62ABoCLN0Gw== # Battlefield Hardline
+196216:                dWPlo4yZK86aGERhO3CTAg== # Battlefield V
+1069143:               gWnsdi9uiwlWGwttrz+AAA== # Battlefield V Open Beta
+16212944:              8yQMrLzUdRY7l73ELhnbQg== # Beholder 2
+16425632:              XcOwymiUHOdxjHr8nVvzZQ== # BIOMUTANT
+198124:                8fSXWZKdcfqmp/QZVJdq2Q== # Breathedge
+bpparty_dd:            KPcloJsijJptO1yV8BMFcw== # Burnout Paradise
+1065728:               iOaatTTm2dUoVrqOZVepZA== # Burnout Paradise Remastered
+cnc_ra3uprising_dd:    zoocRJncG5ZEcr7R99g1xw== # Command & Conquer Red Alert 3 Uprising
+16273025:              YJo1gBobCWdZmyXyx0he4A== # Command & Conquer Remastered Collection
+198284:                bgcahpK+pWvaxw+nJe1Y2Q== # Conan Chop Chop
+16133479:              YY/KqHOF+FwJUCVGg1G8+A== # Cosmic Star Heroine
+16055130:              UC/5kbvcpcDqf6hpZ+rmRQ== # Crashlands
+1003310:               DiFvSjZJxK+fAvrnQO4eVw== # Crysis
+71503:                 GO+w2ia9E9W8TklVIwibXg== # Crysis 3
+16425719:              73HCe2XkvtiFjKAYXheIOA== # Crysis Remastered
+16425950:              T+avuPZwOOOf1by75Yo0fw== # Crysis 2 Remastered
+16425951:              o/NcmIRoBcM6+48b3CBIVA== # Crysis 3 Remastered
+198207:                xgXMM67sGle9XjkiMhLdgQ== # Dead Cells
+16158626:              iNnv9F+W6CnkE0JQeO0AfA== # Dungeons 3
+198374:                Ov0eouOWKDO1wgWF8YCl8w== # Endless Legend
+198282:                SevoMs0wKKpPD3RJJe+LuQ== # Farmers Dynasty
+196470:                JrVSVHnl4AegTmwfrEGycA== # Dead in Bermuda
+1009228:               qoQ3kfT6yMIMy9LYH6ocSA== # Dead Space
+198402:                mD4rz3XC7ynciCf5VNZR3Q== # Dead Space (2023)
+16115019:              CPXO+16XhXYRl9OQMcjqIA== # EA SPORTS FIFA 23
+16115019_oa:           vxnGWs1DON9X0DPYKBgauA== # EA SPORTS FIFA 23 Trial
+198235:                ZZtmGhzsX00WcW6FSMveXA== # EA SPORTS FC 24
+198235_oa:             BLPf57w4Dyh5iDfMojOoAQ== # EA SPORTS FC 24 Trial
+198387:                Dr42fYD5jPidrE99ONMp0w== # EA SPORTS FC 25
+198387_oa:             l8ln0WWEDDsTnZCWIO61wg== # EA SPORTS FC 25 Trial
+198470:                rqIFMyjv45O3kbIUTTVOmQ== # EA SPORTS Madden NFL 25
+198470_oa:             KruPprgZ9ISyIFV79iWJtA== # EA SPORTS Madden NFL 25 Trial
+16425636:              MsD50YuU4nrG2kWOeAPykA== # EA SPORTS WRC
+16425636_oa:           q9FwKwykkoiqJjo9Jeslng== # EA SPORTS WRC Trial
+16274530:              6YyRhy3H0vNqOxcRDiTJJg== # F1 22
+16274530_oa:           rJ1hW0dnCkPa7OwEa/pjew== # F1 22 Trial
+16425635:              T6HZZMcjNRFbkzEWnShYsw== # F1 23
+16425635_oa:           C7yghSMxC6LiPhufw0yZTg== # F1 23 Trial
+16425782:              8cElZ4UF2HVuCP3n/sB1Zg== # F1 24
+16425782_oa:           W3ycnNKXdN+MDkmVdRi+Nw== # F1 24 Trial
+16425845:              mX7t/WO/sCZWPO5mmpp/Iw== # F1 25
+16425845_oa:           O1TX255S0G76Fej2aRABvQ== # F1 25 Trial
+1041863:               MO3lBQ003SC/tPYOa+kU1A== # Fe
+1027460:               jsHymMvuB34nUXoH80eHcw== # FIFA 17
+193608:                9oARgUdkXpFF92T7OA5MvA== # FIFA 18
+193612:                mk/1h6KascimTusYq5y76g== # FIFA 19
+194927:                3BlIgVBejkmAFS60L5t3XQ== # FIFA 20
+195853:                tTCbvWsMSAcJOMwKSBlSuA== # FIFA 21
+196837:                0BqYETv4DDPEQwiglQSahA== # FIFA 22
+196837_oa:             fLsrBJcKiOlusNNfmCXtOQ== # FIFA 22 Trial
+16144811:              /GHivH+fKHTrul2+RBHqbQ== # Fran Bow
+198133:                u1uCp/cEfZiabw3+ByvdOQ== # Frostpunk
+198130:                sEAfpgpKFikzDztFz03IiA== # FTL Faster Than Light
+16110849:              S5b3wm7CHmO3QqBsAzKGSg== # Ghost of a Tale
+16055026:              U0cf4oaozdD3mTLql4AIcQ== # Gone Home
+16274527:              kXP51uoyjNGMx/jAaVBuSg== # GRID Legends
+16084815:              fD/pzY+Rqb7LT/1WRYG+WA== # Halcyon 6 Lightspeed Edition
+16133505:              txCM50NAPKapCdYBvoX5VQ== # Hand of Fate
+16167019:              optcHSNjib7wt+bjXiLPVw== # Hyper Light Drifter
+16425791:              jbkuSbfIlbTVvnW7cgGLSg== # Immortals of Aveum
+196402:                l8G68AvjQiexEMKQhhPvgw== # INSIDE
+198131:                k4GtsMOWH7knb6qdD/p5uQ== # Into the Breach
+16050355:              W0mjk2qViVHR3pAcHilCFg== # It Takes Two
+16050355_fp:           1EtbrlglGoF+0dQqpatDMw== # It Takes Two Friend's Pass
+1019681:               sVI/s2b/T7tUebUo+8bHHA== # Jade Empire
+16293145:              0T6S/3pKkrkJrr6q0yMyUA== # Judgment Apocalypse Survival Simulation
+198399:                lAM0MxMrXzDldaZvT7Uv5w== # Kingdoms of Amalur Re-Reckoning
+196395:                5YTX2RXn/9tSrsVtw+rL8A== # LIMBO
+198188:                xwq/SOofSzXH3hD1it0Zgw== # Lost in Random
+196804:                U2lvJ8uwp5j6XKJLG276+w== # Mad Games Tycoon
+194925:                FzAdRFkpWbtbNRp9WZnBrg== # Madden NFL 20
+195885:                GJgXBhVympC2jEO45XsIPg== # Madden NFL 21
+195885_oa:             tYRBzzvgOjfg+F0qJbm/aw== # Madden NFL 21 Trial
+196893:                uP7H1k7fdGzXQBEeQ6paXQ== # Madden NFL 22
+196893_oa:             IlaL0r1b0ZKaonfOm4W0gA== # Madden NFL 22 Trial
+16113232:              EM1TstR2u19HWlUZcGKHfQ== # Madden NFL 23
+16113232_oa:           oZ02K8is5WnWmVFWp3OJ6w== # Madden NFL 23 Trial
+198349:                n88cLzAM3ydvB+jM5nctew== # Madden NFL 24
+198349_oa:             XMkY3Bz8t9/88d5pBkKNRA== # Madden NFL 24 Trial
+1019025:               YOp1r2+n4tUjaJeQ5RKe/A== # Mass Effect Andromeda
+198196:                k6br2LIok4DagLkpo4mzjw== # Mass Effect Legendary Edition
+1013171:               WL36/NmsDPZi/d5l42wSOA== # Medal of Honor Airborne
+1019521:               FcMKzMM4S8bZbkOyPT9Pqw== # Medal of Honor Pacific Assault
+54744:                 qeoQYarlAoCtHP0Z4XdPhg== # Mirrors Edge
+1026480:               wnKXb1BvTyG5T54aKZTKjQ== # Mirrors Edge Catalyst
+mysims_eu:             FTtHs5XzjHhcUCvpYvYi7w== # MySims
+1024486:               O4plSPRJnr2WoTpQzUZbsQ== # Need for Speed 2015
+195133:                e9rn2ZyG1TEbRofibr+mzg== # Need for Speed Heat
+195133_oa:             CjtfsNpf6D9rn+zYETtHnw== # Need for Speed Heat Trial
+198281:                Ue3yTENUafpYyLF0Wq7sdg== # Need for Speed Hot Pursuit Remastered
+1035208:               Zx331swBuzknevCeOkzfzw== # Need for Speed Payback
+74686:                 Z6jT0VsB0+szSoWKYtOHpg== # Need for Speed Shift 2 Unleashed
+196787:                cHuenRcWtAP/wB5480fSvw== # Need for Speed Unbound
+196787_oa:             ATwQsAku8nnZIYEUkv1L9g== # Need for Speed Unbound Trial
+198320:                i0/FuaYyM2xxWLLP/Mz4IA== # Northgard
+71114:                 wQjofCOFdDkQdlt04OV5Hg== # NOX
+16425629:              m8ojs4HSI2eJps2U/Y7U9A== # PGA Tour (2023)
+194814:                BwMkkjk2DT3iBKLYt0zrnw== # Plants vs Zombies Battle for Neighborville
+1026482:               Cs7MpOym6e6WpXz0D92TMA== # Plants vs Zombies Garden Warfare 2
+16158611:              nbM/H7IrTDUkYU3HDFVm9Q== # Project Highrise
+198255:                74EZerf+m3Ed0GqTxiJY6w== # Rocket Arena
+196173:                Dwwbn1SBLXNihSQDSzoBIg== # Sea of Solitude
+196640:                C1ge2Br1DDyuy2CkZdiiCQ== # Shadow Tactics Blades of the Shogun
+16382151:              Qa45GpoyQk0z+ibFbPA0Wg== # Skate
+198367:                XMxCjN6wmu14L62QnmGtiQ== # Sonic Mania
+spore_dd:              SSBvbmNlIHdhcyBhIHRhaQ== # Spore
+198134:                pm6RqFgg839GGXXE9c4gnQ== # STAR WARS Battlefront 2004
+1024390:               bopu6wdGciv/e9jUWlg9OQ== # STAR WARS Battlefront 2015
+1034229:               QRZdyU7PKMVtnCG3++4oLw== # STAR WARS Battlefront 2015 Beta
+1035052:               s0zmFU188qUYY/DX+GqWRg== # STAR WARS Battlefront II 2017
+16250034:              fgPbqccJpEBa3vAOA5f2AQ== # STAR WARS Battlefront II 2005
+16250046:              xSfolr17DpejM7lG7mJsNg== # STAR WARS Empire at War
+1075135:               WIJortXy9e9YLrGoanViBw== # STAR WARS Empire at War Forces of Corruption
+16250134:              dbrnMnxpPViV5h3HxFExMw== # STAR WARS Episode I Racer
+16250102:              ErDRoYHuwLGpDlzsE0hqGQ== # STAR WARS Galactic Battlegrounds Saga
+196485:                dHeyyrkTws9UeDQlwmpOrg== # STAR WARS Jedi Fallen Order
+16250087:              55vlo28VDsUhhCpYkCyzcQ== # STAR WARS Jedi Knight Jedi Academy
+16250117:              6cJk5YwbzXRKi2fT+cUc0g== # STAR WARS Jedi Knight Mysteries of the Sith
+198300:                qFz/1eQZ5WbealNJ3YDfaA== # STAR WARS Jedi Survivor
+16250049:              2YFvweo9l2DQ3bHW4fDCCg== # STAR WARS Knights of the Old Republic
+16250039:              gwU3fWkjCAS+2Fjg+on2PA== # STAR WARS Knights of the Old Republic II - The Sith Lords
+16250093:              0jiHot2OkNvVHamsbf+fSA== # STAR WARS Republic Commando
+16124549:              +oS0ZZsWMyYoS1ioaRBpAA== # STAR WARS Squadrons
+16250096:              0Lbfad0R9ih8n5SJLJW6RQ== # STAR WARS The Force Unleashed
+16250099:              6eM0l0X/UvU9l/QW7R4XhA== # STAR WARS The Force Unleashed II
+16250084:              7EH/OJqIZTS10HyPsMYXMg== # STAR WARS X-Wing Alliance
+196933:                pZTxt2J8HQiLNapgGjybtA== # SteamWorld Dig
+16158620:              KY07Mwl+aNFO0TPWaphoiA== # Sudden Strike 4
+16274560:              mQZZx/i4PKQ2IqwteXD9JQ== # Super Mega Baseball 3
+196468:                QHlcjzVQDmYzZ5yipzMKbg== # Syberia 2
+198422:                yNDIOyUS1QlHh309cLd2YQ== # Tales of Kenzera ZAU
+198155:                zohjxhBNGaTSTZ9PZZ68lQ== # The Bards Tale Trilogy
+56555:                 GvKY/JA9ChaI/x8gFE8tPg== # The Saboteur
+57358:                 Wkpr4N9df1SlYCEv70TKbw== # The Sims 1 Legacy Collection
+57359:                 pYqLYn5SlyHHwrtgSBiiXA== # The Sims 2 Legacy Collection
+1014457:               i4DZ9hYqsztX6WbJ1AWa7g== # The Sims 2 Ultimate Collection
+sims3_dd:              9hDIHyHtsMi6UPfhfGa5Sw== # The Sims 3
+1011164:               /jjwK6Ss6k/5NtcVkPe7Xg== # The Sims 4
+1014456:               BbVFacgGPEQq7e3ysXukng== # The Sims 4 Create A Sim Demo
+198355:                Gs5yuTGv5eUF1e5l1BzFSg== # The Sinking City
+16133467:              vAtEKr6aIIz9DNtfbSgRLA== # The Solus Project
+196593:                srlLYGWT2PkIMT/9YfLH2A== # The Surge
+198200:                G+8TLWgx7bS5GcGxNwdORA== # The Surge 2
+1039093:               tNuvVF2zq+wRvEJu8HRymw== # Titanfall 2
+16147982:              zBpFUG4/kbCkjN9SJ7qnog== # Turmoil
+198366:                v40d7OM/ruEVXeqIikTKLg== # Two Point Hospital
+1031469:               gJFrcYSzCPcXELAlKPvG7g== # Unravel
+1035049:               8f1NfKoZhMTDvEBj5ybfog== # Unravel Two
+198142:                FltxmBX12GXE6ng3WkAU0g== # Warhammer 40000 Mechanicus
+16425769:              N1TwZ8uISHpbX6zBuv/z8A== # WILD HEARTS
+16425769_oa:           vKqHwwsh0KgVYZ7/fRTqAw== # WILD HEARTS trial
+# I don't have exe files for these so I can't compare
+# exe files unwrapped manually to those by script.
+spore_scc_main:        Lirihm4Tt+Cq9kqEYdz2uQ== # Spore Creature Creator
+spore_ep1_dd:          LNFIfuSy06PxHhebBo7fQg== # Spore EP1 (Galactic Adventures)
+...

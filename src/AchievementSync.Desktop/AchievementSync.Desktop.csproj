@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\AchievementSync.Core\AchievementSync.Core.csproj" />
+    <Resource Include="..\..\assets\AchievementSync.ico" Link="Assets\AchievementSync.ico" />
+    <EmbeddedResource Include="Assets\achievement-unlock.wav" />
+    <EmbeddedResource Include="Assets\achievement-tick.wav" />
+    <EmbeddedResource Include="Assets\achievement-arpeggio.wav" />
+    <PackageReference Include="System.Management" Version="10.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0</FileVersion>
+    <InformationalVersion>1.2.0</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AssemblyName>AchievementSync</AssemblyName>
+    <Product>AchievementSync</Product>
+    <Authors>Pozo</Authors>
+    <Company>Pozo</Company>
+    <Copyright>Copyright © 2026 Pozo. Licensed under GPL-3.0-or-later.</Copyright>
+    <Description>Track, unlock, and sync your game achievements across every platform.</Description>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\..\assets\AchievementSync.ico</ApplicationIcon>
+    <!-- Single-file self-contained publish: one AchievementSync.exe with no external runtimes needed.
+         Publish with: dotnet publish src/AchievementSync.Desktop/AchievementSync.Desktop.csproj -c Release -r win-x64 /p:SelfContained=true /p:PublishSingleFile=true
+         WPF window chrome is explicitly set via WindowStyle="SingleBorderWindow" in MainWindow.xaml so the title bar renders. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">$(ACHIEVEMENTSYNC_GITHUB_CLIENT_ID)</AchievementSyncGitHubClientId>
+    <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">Ov23liJMW4F1dg3IaWAd</AchievementSyncGitHubClientId>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(AchievementSyncGitHubClientId)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AchievementSync.GitHubOAuthClientId</_Parameter1>
+      <_Parameter2>$(AchievementSyncGitHubClientId)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

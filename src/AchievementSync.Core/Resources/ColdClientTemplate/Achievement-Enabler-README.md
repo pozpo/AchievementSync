@@ -1,0 +1,234 @@
+# Achievement Enabler
+
+This script package aims to make games work with achievements for multiple platforms,
+
+## Compatible platforms
+These need additional adapter files (check releases for more info):
+- Steam (gbe_fork)
+- Ubisoft (Uplay R1; Uplay R2)
+- EA (Origin Emulator)
+
+These don't need additional adapter files:
+- Epic (NemirtingasEpicEmulator) [Tested with Alan Wake 2 and worked but that needed a specific EOSSDK-Win64-Shipping.dll to launch]
+- GOG (UniverseLAN)
+
+## Usage
+
+1. Extract the zipped release to a folder
+2. (GOG, EA and Epic don't need this step) Create `%SystemDrive%\steamcmd\_AchievementEnabler\dummy_account.txt` (line 1: username, line 2: password) and fill in your "throwaway Steam account" details
+4. Keep a backup of these files somewhere because the script will delete all script related files from the game's folder after it finishes
+5. Copy all script files to the game's main folder
+6. Run _Achievement_Enabler.bat and follow the steps
+
+## Settings
+The settings of Achievement Enabler can be found in the folder below where you can change them:
+"%SystemDrive%\steamcmd\\_AchievementEnabler"
+
+## Layout
+
+```
+_Achievement_Enabler.bat               <- the only script you run from the game's folder
+core/
+ └─ common/
+    ├─ select_adapter.ps1              <- scans adapters/*/adapter.json, picks one
+    ├─ download_helpers.bat            <- shared GitHub asset / GBE Fork / GSE Tools fetch
+    ├─ shared_find_appid.ps1           <- Steam Store AppID lookup by folder name
+    ├─ shared_parse_launch_args.ps1    <- Checks if the game needs any launch arguments to make achievemens work
+    ├─ update_top_owners.py            <- Tries to create a list of profiles with newest games so achievement info can be collected
+    └─ check_update.py                 <- Checks GitHub page's releases for updates
+adapters/
+ ├─ ea_origin_emulator              <- Origin Emulator (by anadius)
+ │  ├─ (Project files)
+ │  ├─ Origin Emulator              <- Not part of the GitHub project, check release notes
+ │  └─ Origin Unwrapper             <- Not part of the GitHub project, check release notes
+ ├─ epic_nemirtingas_epic_emulator  <- NemirtingasEpicEmulator (by Nemirtingas)
+ │  └─ (Project files)
+ ├─ gog_universelan/                <- GOG UniverseLAN (GOG Galaxy wrapper by grasmanek94)
+ │  └─ (Project files)
+ ├─ ubisoft_uplay_r1/               <- Uplay R1 (older Ubisoft emulator version by demde), same structure as Uplay R2
+ │  ├─ (Project files)
+ │  └─ UplayR1-*/                   <- Not part of the GitHub project, check release notes
+ ├─ ubisoft_uplay_r2/               <- Uplay R2 (Goldberg R2 Ubisoft emulator version by demde)
+ │  ├─ (Project files)
+ │  └─ GoldbergUplayR2-*/           <- Not part of the GitHub project, check release notes.
+ └─ steam_coldclient/               <- Steam ColdClient (Goldberg Steam emulator fork by Detanup01)
+    ├─ (Project files)
+    ├─ steamstub_x32.dll            <- Not part of the GitHub project, check release notes
+    └─ steamstub_x64.dll            <- Not part of the GitHub project, check release notes
+```
+
+## How it works
+
+`_Achievement_Enabler.bat` does everything that used to be duplicated between
+the old scripts exactly once: downloads GBE Fork + GSE Tools, auto-detects
+which adapter applies, runs automatic crack-state pre-flight checks, finds/
+confirms the Steam AppID, fetches the SteamCMD manifest, parses launch args,
+runs `generate_emu_config` to produce achievement data, exports to
+Achievement Watcher and the Jokerverse Achievements app, creates the desktop
+shortcut, and cleans up.
+
+Everything that's actually different between emulators is delegated to
+whichever **adapter** gets selected, through five fixed hooks called in this
+order:
+
+1. `find_paths.ps1` — locate the game's exe and the relevant loader DLL.
+   Writes `_ae_vars.cmd` (`EXE_REL`, `DLL_REL`, `DLL_FOLDER_REL`,
+   `ExePathRelative`, and for Steam ColdClient also `LOADER_EXE`).
+2. `write_config.ps1` — write whatever config files that emulator needs:
+   - **Steam ColdClient**: rebuilds `_ColdClient` from the GBE Fork template,
+     copies in `steamstub_x32/64.dll`, copies in and runs
+     `UserData_symbolic_link_for_D_tokens.ps1` (creates the `userdata`
+     junction, then deletes itself), copies in achievement data + injects
+     global unlock percentages, writes `version.txt` (GBE Fork tag) directly
+     into `_ColdClient\`, patches `ColdClientLoader.ini`, and best-effort
+     writes `configs.user.ini` from a local Denuvo token if one exists. The
+     Denuvo lookup is wrapped in its own function so "no token found" only
+     skips that step instead of ending the whole script early (it used to,
+     which silently broke every step after it).
+   - **Uplay R2 / Uplay R1**: validates its asset pack is complete (fails
+     with a clear "redownload the emulator files" error if not), detects the
+     achievement key prefix, generates `achievements_schema.json`, backs up
+     and copies in the matching `upc_r*.ini`/`uplay_r*.ini` + loader DLL, and
+     patches the INI.
+   May write `_ae_final_exe.cmd` (`AE_FINAL_EXECUTABLE`) if the thing that
+   actually launches the game isn't the game's own exe (Steam ColdClient
+   points this at the ColdClient loader).
+3. `modify_joker_json.ps1` — fill in the per-game JSON for the Jokerverse
+   Achievements app, if it's installed.
+4. `generate_achievement_percentages.ps1` — same call signature for every
+   adapter: `-AppId -AchievementsJsonPath -OutputRoot`. Writes global unlock
+   percentages for the Jokerverse export. (Steam ColdClient's copy also
+   supports an `-InjectInPlace` switch it uses internally to bake
+   percentages into its own achievements.json.)
+5. `make_shortcut.ps1` — create the desktop shortcut.
+
+The orchestrator sets a superset of `AE_*` environment variables before each
+hook and never branches on which adapter is active — each script just reads
+the subset of variables it needs. The one deliberate exception is
+`generate_interfaces` (writes `steam_interfaces.txt`), which is gated on
+`AE_ADAPTER_ID`==`steam_coldclient` directly in the orchestrator and searches
+recursively under `release\` for `generate_interfaces_x64.exe` rather than
+assuming a fixed subpath (GBE Fork's internal layout has moved before, and a
+hardcoded path failed silently). It's run directly from `cmd`, never from
+inside a PowerShell adapter script — spawning it via PowerShell
+`Start-Process` is known to crash it (0xC0000409).
+
+## Crack-state handling
+
+There's no upfront prompt before the adapter is known. Right after an
+adapter is selected, the orchestrator runs automatic checks (search excludes
+`core\` and `adapters\`, so the project's own shipped template files never
+cause a false positive):
+
+- **`ubisoft_uplay_r2` / `ubisoft_uplay_r1` selected** — searches the game folder for
+  `uplay_r*.ini` or `upc_r*.ini`. Found → assumed already cracked, proceeds
+  silently, no prompt. Not found → stops and tells the user to apply the
+  crack files first, then rerun.
+- **`steam_coldclient` selected** — first searches the game folder for
+  `voices38.dll`. Found → stops unconditionally and tells the user to
+  reinstall the game without crack files, then rerun.
+  (A `voices38.dll` already sitting in the folder means that the game
+  is already cracked and the script can't safely work.)
+  Not found → shows a prompt:
+  ```
+  Please select the Steam release you are using for this game:
+    1 - Clean Steam Files / RUNE Steam release
+    2 - voices38 Steam release
+    3 - Hypervisor Steam release
+  ```
+  Option 1 runs fully automatically as it expects uncracked, unmodified, original Steam
+  game files or RUNE releases are handled by the same option: the game folder is
+  searched recursively for `*.rne` files (RUNE's renamed originals). For each one,
+  the cracked counterpart with the same base name (e.g. `steam_api64.dll`,
+  `Resonance.exe`) is renamed to `.crk`, and the `.rne` gets the counterpart's
+  extension back — restoring the clean Steam files. Any `steam_emu.ini` in the
+  game folder is then deleted. With no `.rne` files present
+  this step does nothing.
+
+  Option 2 sets `VOICES38=1`, and near the end of the run (after the shortcut
+  is created) the script renames the original loader DLL aside, pauses for
+  the user to apply the crack files, then removes the crack's unneeded files
+  and restores the original loader DLL from backup.
+
+  Option 3 pauses right away and asks the user to apply the Hypervisor files
+  to the game folder, then waits until the user presses Enter.
+  After that it continues exactly like option 1 but will look for potentially
+  faulty achievement-related files from the Hypervisor files and delete them.
+  The deleted files' settings will be handled by the global settings folder,
+  "%AppData%\GSE Saves\settings".
+
+## How adapter auto-detection works
+
+Each `adapter.json` has a `detect` block:
+
+```json
+"detect": {
+  "loader_dll_names": ["upc_r2_loader.dll", "upc_r2_loader64.dll", "uplay_r2_loader.dll", "uplay_r2_loader64.dll"],
+  "is_default": false
+}
+```
+
+`core/common/select_adapter.ps1` searches the **game folder** (recursively)
+for any file named in `loader_dll_names`, and auto-selects the adapter that
+matches. The search excludes the script's own `core\` and `adapters\`
+folders wholesale — which also covers each adapter's own asset pack (e.g.
+`adapters\ubisoft_uplay_r2\GoldbergUplayR2-*\`), since that lives *inside*
+`adapters\`, not next to the script or in the game folder.
+
+Exactly one adapter should have `"is_default": true` with an empty
+`loader_dll_names` list (`steam_coldclient` today) — that's the fallback
+used when no other adapter's DLLs are found anywhere in the game folder.
+
+`assets_folder_glob` is unrelated to detection. It only tells `write_config.ps1`
+where to find that adapter's ini/DLL template pack, and is resolved **inside
+the adapter's own folder** (`adapters\<id>\<glob>`).
+
+## Adding a third (or fourth) emulator
+
+1. `mkdir adapters/<new_id>`
+2. Add `adapter.json`:
+   ```json
+   {
+     "id": "<new_id>",
+     "name": "Human-readable name",
+     "priority": 30,
+     "detect": { "loader_dll_names": ["whatever_loader.dll"], "is_default": false },
+     "assets_folder_glob": "SomeAssets-*"
+   }
+   ```
+3. Implement the five hook scripts using the `AE_*` contract documented
+   above (copy `ubisoft_uplay_r2` or `ubisoft_uplay_r1` as a starting point if the new
+   emulator is ini/DLL-based like those two — it's the more reusable
+   pattern; `steam_coldclient` has more one-off logic).
+4. Add a `GameSample.json` template with whatever `executable` value makes
+   sense for that emulator.
+5. If it needs its own asset pack (ini/DLL templates), ship it inside
+   `adapters/<new_id>/` and give `write_config.ps1` a failsafe check for the
+   required files, matching the `ubisoft_uplay_r2`/`ubisoft_uplay_r1` pattern.
+6. If the new emulator is ini/DLL-based and has its own "already cracked"
+   marker files, add a check for it alongside the `ubisoft_uplay_r2`/`ubisoft_uplay_r1`
+   blocks in the orchestrator's crack-state pre-flight step.
+
+Nothing else in `_Achievement_Enabler.bat` needs to change.
+
+## Special thanks
+
+Thank you Detanup01 for [gbe_fork](https://github.com/Detanup01/gbe_fork)
+
+Thank you alex47exe for [gse_fork_tools](https://github.com/alex47exe/gse_fork_tools)
+
+Thank you buzarini for the [base download and extract part of the script's download helper](https://cs.rin.ru/forum/viewtopic.php?p=3379912#p3379912)
+
+Thank you Valentine for [SteamStub patcher files](https://cs.rin.ru/forum/viewtopic.php?p=3193776#p3193776)
+
+Thank you D4rkz0mb1e, Kransekage, jacobneverstops, Emre_hitman47, Data_Dynamite4321, rektalbox, StevensND, suasif, dasafe, Fearless_Chang for your suggestions and feedbacks in the original projects before this project was merged
+
+Thank you demde for [UplayR1](https://cs.rin.ru/forum/viewtopic.php?p=3572254#p3572254) and [UplayR2](https://cs.rin.ru/forum/viewtopic.php?p=3526038#p3526038)
+
+Thank you grasmanek94 for [UniverseLAN](https://github.com/grasmanek94/UniverseLAN)
+
+Thank you JokerVerse for [Epic achievement fetch script](https://pserban93.github.io/Achievements-Docs/platforms.html#nemirtingas-epic-emu)
+
+Thank you Nemirtingas for [NemirtingasEpicEmulator](https://gitlab.com/Nemirtingas/epicemulatorregistry)
+
+Thank you anadius for [Origin Emulator](https://cs.rin.ru/forum/viewtopic.php?p=2432863#p2432863) and [Origin Unwrapper](https://cs.rin.ru/forum/viewtopic.php?p=2660134#p2660134)

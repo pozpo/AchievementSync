@@ -1,0 +1,20 @@
+# .NET and Visual Studio build outputs
+**/bin/
+**/obj/
+**/artifacts/
+.vs/
+.idea/
+
+# Local publish output and logs
+/output*/
+/publish-*.log
+
+# User-specific and temporary files
+*.user
+*.suo
+*.tmp
+/tmp/
+
+# Keep bundled runtime resources under src/AchievementSync.Core/Resources tracked.
+# Do not ignore *.dll or *.exe globally: those resource files are required to build
+# the single-file application and retain their own third-party licenses.

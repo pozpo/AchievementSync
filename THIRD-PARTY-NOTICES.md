@@ -1,6 +1,6 @@
 # Third-party notices
 
-The root [LICENSE.md](LICENSE.md) applies to original AchievementSync source code written for this project. It does not replace or relicense third-party code, data, or binary payloads included in the repository or the application.
+Original AchievementSync source code is Copyright (C) 2026 Pozo and licensed under **GNU GPL-3.0-or-later** (see [LICENSE.md](LICENSE.md)). That license does not replace or relicense third-party code, data, or binary payloads included in the repository or the application, nor projects AchievementSync interoperates with such as [Roschach96/achievement-viewer](https://github.com/Roschach96/achievement-viewer).
 
 Keep the license and attribution files beside the resources they describe. Before publishing a release binary, verify the exact upstream version and redistribution terms for each bundled payload and provide any corresponding source required by its license.
 

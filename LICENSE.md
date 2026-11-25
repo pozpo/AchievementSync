@@ -1,11 +1,3 @@
-AchievementSync original source code
-Copyright (C) 2026 Pozo
-
-This license applies to original AchievementSync code. Third-party libraries, data, emulator payloads, and other bundled resources—including components and designs derived from Roschach96's Achievement-Enabler (MIT) and Achievement Viewer ecosystem—remain under their own licenses and notices; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and the files shipped with each component.
-
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

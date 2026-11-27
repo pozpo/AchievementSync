@@ -147,7 +147,7 @@ public sealed class SteamCommunityCatalogClient
         {
             Timeout = TimeSpan.FromSeconds(12)
         };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("AchievementSync/1.2.0 (+achievement catalog cache)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("AchievementSync/1.3.0 (+achievement catalog cache)");
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
         return client;
     }

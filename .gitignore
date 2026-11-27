@@ -1,20 +1,35 @@
-# .NET and Visual Studio build outputs
+# Build output
 **/bin/
 **/obj/
-**/artifacts/
+**/Debug/
+**/Release/
+**/publish/
+
+# Test results and logs
+**/TestResults/
+*.log
+
+# Visual Studio
 .vs/
-.idea/
-
-# Local publish output and logs
-/output*/
-/publish-*.log
-
-# User-specific and temporary files
-*.user
 *.suo
-*.tmp
-/tmp/
+*.user
+*.userosscache
+*.sln.docstates
 
-# Keep bundled runtime resources under src/AchievementSync.Core/Resources tracked.
-# Do not ignore *.dll or *.exe globally: those resource files are required to build
-# the single-file application and retain their own third-party licenses.
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# Temporary files
+*.tmp
+*.temp
+
+# Windows and macOS metadata
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Local release artifacts (project root only)
+/AchievementSync.exe
+/AchievementSync.zip

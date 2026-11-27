@@ -232,7 +232,10 @@ public sealed class PlatformSourceFileMonitor : IDisposable
         "rpcs3" or "ps4" or "ps5" => "playstation",
         "epic" => "epic",
         "gog" => "gog",
-        "uplay" => "uplay",
+        "uplay" or "uplaycache" or "uplayrune" => "uplay",
+        "ea" => "ea",
+        "recomp" or "ladxhd" => "recomp",
+        "retroachievements" or "ra" => "retroachievements",
         _ => null
     };
 }

@@ -12,11 +12,39 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
     public override bool IsConfigured => IsConfiguredFor(PlatformSourceOptions.CreateDefault());
 
     public override bool IsConfiguredFor(PlatformSourceOptions options) =>
-        new[] { options.Rpcs3Root, options.Ps4Root, options.Ps5Root }
-            .Any(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path));
+        Ps3Roots(options).Any(Directory.Exists)
+        || Ps4Roots(options).Any(Directory.Exists)
+        || Ps5Roots(options).Any(Directory.Exists);
 
     public override string? ConfigurationHint =>
-        "Keep RPCS3, shadPS4 or Kyty data in its default folder, or choose it on the Platforms page.";
+        "Keep RPCS3, shadPS4 (%APPDATA%\\shadPS4), or Kyty (_Trophies) in its folder, or choose it on the Platforms page.";
+
+    private static IEnumerable<string> Ps3Roots(PlatformSourceOptions options) =>
+        new[] { options.Rpcs3Root }
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.GetFullPath(p!))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+    private static IEnumerable<string> Ps4Roots(PlatformSourceOptions options)
+    {
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return new[]
+            {
+                options.Ps4Root,
+                Path.Combine(roaming, "shadPS4"),
+                Path.Combine(local, "shadPS4")
+            }
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.GetFullPath(p!))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> Ps5Roots(PlatformSourceOptions options) =>
+        new[] { options.Ps5Root }
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.GetFullPath(p!))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
 
     public override Task<PlatformCollectResult> CollectAsync(PlatformSourceOptions options, CancellationToken cancellationToken = default)
     {
@@ -24,10 +52,11 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
         var messages = new List<string>();
         var anyRoot = false;
 
-        if (!string.IsNullOrWhiteSpace(options.Rpcs3Root) && Directory.Exists(options.Rpcs3Root))
+        // 1. RPCS3
+        foreach (var rpcs3Root in Ps3Roots(options).Where(Directory.Exists))
         {
             anyRoot = true;
-            foreach (var conf in Enumerate(options.Rpcs3Root, "TROPCONF.SFM", 10))
+            foreach (var conf in Enumerate(rpcs3Root, "TROPCONF.SFM", 10))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 try
@@ -38,7 +67,7 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
                     var achievements = ReadRpcs3TrophySet(conf, Path.Combine(directory, "TROPUSR.DAT"));
                     if (achievements.Count == 0) continue;
                     games[gameId] = new PlatformGameSnapshot(Platform, gameId,
-                        TrophyTitle(conf), conf, achievements);
+                        TrophyTitle(conf), conf, achievements, "rpcs3");
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Xml.XmlException)
                 {
@@ -47,45 +76,202 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(options.Ps4Root) && Directory.Exists(options.Ps4Root))
+        // 2. ShadPS4 (prefer modern trophy/<NPWR> + home/<user>/trophy/<NPWR>.xml over legacy game_data/<CUSA>/TrophyFiles)
+        foreach (var ps4Root in Ps4Roots(options).Where(Directory.Exists))
         {
             anyRoot = true;
-            foreach (var xml in Enumerate(options.Ps4Root, "TROP*.XML", 10))
+            CollectShadPs4(ps4Root, games, messages, cancellationToken);
+        }
+
+        // 3. KytyPS5 (_Trophies + registered launcher games/.zar)
+        foreach (var ps5Root in Ps5Roots(options).Where(Directory.Exists))
+        {
+            anyRoot = true;
+            CollectKytyPs5(ps5Root, games, messages, cancellationToken);
+        }
+
+        if (!anyRoot) messages.Add("No PlayStation trophy folder was found.");
+        return Task.FromResult(new PlatformCollectResult(Platform, games.Values.ToList(), messages));
+    }
+
+    private void CollectShadPs4(
+        string ps4Root,
+        SortedDictionary<string, PlatformGameSnapshot> games,
+        List<string> messages,
+        CancellationToken cancellationToken)
+    {
+        var npwrToCusa = ReadNpwrToCusaMapping(ps4Root);
+        var modernCoveredIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Modern ShadPS4 layout:
+        //   Schema: <root>\trophy\<NPWR>\Xml\TROP*.XML
+        //   User progress: <root>\home\<userId>\trophy\<NPWR>.xml (or <root>\home\<userId>\trophy\<NPWR>\Xml\TROP*.XML)
+        var modernTrophyRoot = Path.Combine(ps4Root, "trophy");
+        if (Directory.Exists(modernTrophyRoot))
+        {
+            foreach (var npwrDir in Directory.EnumerateDirectories(modernTrophyRoot))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var npwr = Path.GetFileName(npwrDir);
+                if (string.IsNullOrWhiteSpace(npwr)) continue;
+                var xmlDir = Path.Combine(npwrDir, "Xml");
+                if (!Directory.Exists(xmlDir)) continue;
+
                 try
                 {
-                    var xmlDir = Path.GetDirectoryName(xml)!;
-                    if (!string.Equals(Path.GetFileName(xmlDir), "Xml", StringComparison.OrdinalIgnoreCase)) continue;
-                    var trophyDir = Path.GetDirectoryName(xmlDir)!;
-                    var slotParent = Path.GetDirectoryName(trophyDir)!;
-                    var gameId = string.Equals(Path.GetFileName(slotParent), "TrophyFiles", StringComparison.OrdinalIgnoreCase)
-                        ? Path.GetFileName(Path.GetDirectoryName(slotParent))!
-                        : Path.GetFileName(trophyDir);
-                    var achievements = ReadPs4TrophyXmlDirectory(xmlDir);
-                    if (achievements.Count == 0) continue;
-                    games[gameId] = new PlatformGameSnapshot(Platform, gameId, null, xmlDir, achievements);
+                    var schema = ReadPs4TrophyXmlDirectory(xmlDir);
+                    if (schema.Count == 0) continue;
+
+                    var iconsDir = Path.Combine(npwrDir, "Icons");
+                    if (Directory.Exists(iconsDir))
+                    {
+                        schema = AttachShadPs4Icons(schema, iconsDir);
+                    }
+
+                    var userFiles = DiscoverShadPs4UserXmls(ps4Root, npwr);
+                    var resolvedCusa = npwrToCusa.GetValueOrDefault(npwr);
+                    var canonicalGameId = !string.IsNullOrWhiteSpace(resolvedCusa) ? resolvedCusa : npwr;
+                    modernCoveredIds.Add(npwr);
+                    if (!string.IsNullOrWhiteSpace(resolvedCusa)) modernCoveredIds.Add(resolvedCusa);
+
+                    if (userFiles.Count == 0)
+                    {
+                        games[canonicalGameId] = new PlatformGameSnapshot(Platform, canonicalGameId, null, xmlDir, schema, "shadps4-modern");
+                        continue;
+                    }
+
+                    // Merge across per-user progress XMLs (and keep per-user scoped snapshots when multiple users exist).
+                    var mergedById = schema.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
+                    foreach (var (userId, userXml) in userFiles)
+                    {
+                        try
+                        {
+                            var userStates = ReadShadPs4UserProgressXml(userXml);
+                            var perUserAchievements = MergeUserStates(schema, userStates);
+                            foreach (var a in perUserAchievements)
+                            {
+                                if (mergedById.TryGetValue(a.Id, out var cur))
+                                {
+                                    var earned = cur.Earned || a.Earned;
+                                    mergedById[a.Id] = cur with
+                                    {
+                                        Earned = earned,
+                                        EarnedTimeUnix = earned ? Math.Max(cur.EarnedTimeUnix, a.EarnedTimeUnix) : 0
+                                    };
+                                }
+                            }
+
+                            if (userFiles.Count > 1)
+                            {
+                                var scopedKey = $"{canonicalGameId}_user_{userId}";
+                                games[scopedKey] = new PlatformGameSnapshot(Platform, scopedKey, null, userXml, perUserAchievements, $"shadps4-user-{userId}");
+                            }
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+                        {
+                            messages.Add($"PlayStation: skipped user trophy XML {Path.GetFileName(userXml)} ({ex.GetType().Name}).");
+                        }
+                    }
+
+                    games[canonicalGameId] = new PlatformGameSnapshot(
+                        Platform,
+                        canonicalGameId,
+                        null,
+                        userFiles[0].Path,
+                        mergedById.Values.OrderBy(a => int.TryParse(a.Id, out var n) ? n : int.MaxValue).ThenBy(a => a.Id, StringComparer.OrdinalIgnoreCase).ToArray(),
+                        "shadps4-modern");
                 }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Xml.XmlException)
                 {
-                    messages.Add($"PlayStation: skipped {Path.GetFileName(xml)} ({exception.GetType().Name}).");
+                    messages.Add($"PlayStation: skipped {npwr} ({ex.GetType().Name}).");
                 }
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(options.Ps5Root) && Directory.Exists(options.Ps5Root))
+        // Legacy ShadPS4 layout:
+        //   <root>\game_data\<CUSA>\TrophyFiles\trophy00\Xml\TROP*.XML
+        // Also supports direct TROP*.XML under Xml/ when a user pointed Ps4Root directly at a TrophyFiles or game folder.
+        foreach (var xml in Enumerate(ps4Root, "TROP*.XML", 10))
         {
-            anyRoot = true;
-            foreach (var stateFile in Enumerate(options.Ps5Root, "trophies_*.json", 10))
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var xmlDir = Path.GetDirectoryName(xml)!;
+                if (!string.Equals(Path.GetFileName(xmlDir), "Xml", StringComparison.OrdinalIgnoreCase)) continue;
+                var trophyDir = Path.GetDirectoryName(xmlDir)!;
+                if (string.Equals(Path.GetDirectoryName(trophyDir), modernTrophyRoot, StringComparison.OrdinalIgnoreCase))
+                    continue; // Already handled by modern layout
+
+                var slotParent = Path.GetDirectoryName(trophyDir)!;
+                var gameId = string.Equals(Path.GetFileName(slotParent), "TrophyFiles", StringComparison.OrdinalIgnoreCase)
+                    ? Path.GetFileName(Path.GetDirectoryName(slotParent))!
+                    : Path.GetFileName(trophyDir);
+                if (string.IsNullOrWhiteSpace(gameId)) continue;
+
+                // Prefer modern ShadPS4 storage when both modern and legacy layouts exist for the same game.
+                if (modernCoveredIds.Contains(gameId)) continue;
+                if (games.ContainsKey(gameId)) continue;
+
+                var achievements = ReadPs4TrophyXmlDirectory(xmlDir);
+                if (achievements.Count == 0) continue;
+                var iconsDir = Path.Combine(trophyDir, "Icons");
+                if (Directory.Exists(iconsDir)) achievements = AttachShadPs4Icons(achievements, iconsDir);
+                games[gameId] = new PlatformGameSnapshot(Platform, gameId, null, xmlDir, achievements, "shadps4-legacy");
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+            {
+                messages.Add($"PlayStation: skipped {Path.GetFileName(xml)} ({exception.GetType().Name}).");
+            }
+        }
+    }
+
+    private void CollectKytyPs5(
+        string ps5Root,
+        SortedDictionary<string, PlatformGameSnapshot> games,
+        List<string> messages,
+        CancellationToken cancellationToken)
+    {
+        var trophyRoots = new List<string> { ps5Root };
+        var underscoreTrophies = Path.Combine(ps5Root, "_Trophies");
+        if (Directory.Exists(underscoreTrophies)) trophyRoots.Add(underscoreTrophies);
+
+        foreach (var root in trophyRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var stateFile in Enumerate(root, "trophies_*.json", 6))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     var directory = Path.GetDirectoryName(stateFile)!;
                     var gameId = Path.GetFileName(directory);
+                    if (string.IsNullOrWhiteSpace(gameId)) continue;
                     var achievements = ReadPs5TrophyState(stateFile);
                     if (achievements.Count == 0) continue;
-                    games[gameId] = new PlatformGameSnapshot(Platform, gameId, null, stateFile, achievements);
+
+                    var fileName = Path.GetFileNameWithoutExtension(stateFile);
+                    var key = gameId;
+                    if (games.TryGetValue(key, out var existing))
+                    {
+                        games[key] = existing with
+                        {
+                            SourcePath = stateFile,
+                            Achievements = UnionAchievements(existing.Achievements, achievements),
+                            Version = "kyty-ps5"
+                        };
+                    }
+                    else
+                    {
+                        games[key] = new PlatformGameSnapshot(Platform, key, null, stateFile, achievements, "kyty-ps5");
+                    }
+
+                    // Keep per-user scoped copy when filename has userId (trophies_<userId>_<idx>.json)
+                    var parts = fileName.Split('_');
+                    if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
+                    {
+                        var userKey = $"{gameId}_user_{parts[1]}";
+                        if (!games.ContainsKey(userKey) && Enumerate(directory, "trophies_*.json", 1).Count() > 1)
+                            games[userKey] = new PlatformGameSnapshot(Platform, userKey, null, stateFile, achievements, $"kyty-user-{parts[1]}");
+                    }
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
                 {
@@ -94,8 +280,241 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
             }
         }
 
-        if (!anyRoot) messages.Add("No PlayStation trophy folder was found.");
-        return Task.FromResult(new PlatformCollectResult(Platform, games.Values.ToList(), messages));
+        // Also scan KytyPS5 launcher configuration (config.json / games.json) for registered game locations & .zar titles
+        foreach (var cfgFile in new[] { "config.json", "games.json", "launcher.json" }
+                     .Select(name => Path.Combine(ps5Root, name))
+                     .Where(File.Exists))
+        {
+            try
+            {
+                foreach (var registered in ReadKytyRegisteredGames(cfgFile))
+                {
+                    if (!games.ContainsKey(registered.TitleId))
+                    {
+                        games[registered.TitleId] = new PlatformGameSnapshot(
+                            Platform,
+                            registered.TitleId,
+                            registered.Title,
+                            registered.Path,
+                            [],
+                            "kyty-registered");
+                    }
+                    else if (!string.IsNullOrWhiteSpace(registered.Title))
+                    {
+                        var existing = games[registered.TitleId];
+                        if (string.IsNullOrWhiteSpace(existing.Title))
+                            games[registered.TitleId] = existing with { Title = registered.Title };
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                messages.Add($"PlayStation: skipped Kyty config {Path.GetFileName(cfgFile)} ({ex.GetType().Name}).");
+            }
+        }
+    }
+
+    public static Dictionary<string, string> ReadNpwrToCusaMapping(string shadPs4Root)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var npwrCusaRegex = new Regex(@"(NPWR\d{5}_\d{2}).*?(CUSA\d{5})|(CUSA\d{5}).*?(NPWR\d{5}_\d{2})",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        foreach (var subDir in new[] { "log", "logs", "." })
+        {
+            var dir = Path.Combine(shadPs4Root, subDir);
+            if (!Directory.Exists(dir)) continue;
+            foreach (var logFile in Directory.EnumerateFiles(dir, "*.txt", SearchOption.TopDirectoryOnly)
+                         .Concat(Directory.EnumerateFiles(dir, "*.log", SearchOption.TopDirectoryOnly)))
+            {
+                try
+                {
+                    foreach (var line in File.ReadLines(logFile))
+                    {
+                        var m = npwrCusaRegex.Match(line);
+                        if (!m.Success) continue;
+                        var npwr = (m.Groups[1].Success ? m.Groups[1].Value : m.Groups[4].Value).ToUpperInvariant();
+                        var cusa = (m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value).ToUpperInvariant();
+                        map.TryAdd(npwr, cusa);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        // Also check game_data\<CUSA>\npwr* or param.sfo/trophy00 correlations if present
+        var gameDataDir = Path.Combine(shadPs4Root, "game_data");
+        if (Directory.Exists(gameDataDir))
+        {
+            foreach (var cusaDir in Directory.EnumerateDirectories(gameDataDir))
+            {
+                var cusa = Path.GetFileName(cusaDir);
+                if (!Regex.IsMatch(cusa, @"^CUSA\d{5}$", RegexOptions.IgnoreCase)) continue;
+                var mapMarker = Path.Combine(cusaDir, "npwr.txt");
+                if (File.Exists(mapMarker))
+                {
+                    var npwr = File.ReadAllText(mapMarker).Trim();
+                    if (Regex.IsMatch(npwr, @"^NPWR\d{5}_\d{2}$", RegexOptions.IgnoreCase))
+                        map.TryAdd(npwr.ToUpperInvariant(), cusa.ToUpperInvariant());
+                }
+            }
+        }
+
+        return map;
+    }
+
+    private static List<(string UserId, string Path)> DiscoverShadPs4UserXmls(string ps4Root, string npwr)
+    {
+        var results = new List<(string UserId, string Path)>();
+        var homeDir = Path.Combine(ps4Root, "home");
+        if (!Directory.Exists(homeDir)) return results;
+
+        foreach (var userDir in Directory.EnumerateDirectories(homeDir))
+        {
+            var userId = Path.GetFileName(userDir);
+            if (string.IsNullOrWhiteSpace(userId)) continue;
+            var trophyFile = Path.Combine(userDir, "trophy", npwr + ".xml");
+            if (File.Exists(trophyFile))
+            {
+                results.Add((userId, trophyFile));
+                continue;
+            }
+            var nestedXmlDir = Path.Combine(userDir, "trophy", npwr, "Xml");
+            if (Directory.Exists(nestedXmlDir))
+            {
+                var nested = Directory.EnumerateFiles(nestedXmlDir, "TROP*.XML").FirstOrDefault();
+                if (nested is not null) results.Add((userId, nested));
+            }
+        }
+        return results;
+    }
+
+    public static Dictionary<int, (bool Earned, long Timestamp)> ReadShadPs4UserProgressXml(string xmlPath)
+    {
+        var states = new Dictionary<int, (bool Earned, long Timestamp)>();
+        var doc = XDocument.Load(xmlPath);
+        foreach (var trophy in doc.Descendants().Where(e => e.Name.LocalName == "trophy"))
+        {
+            if (!int.TryParse(trophy.Attribute("id")?.Value, out var id)) continue;
+            var stateAttr = trophy.Attribute("unlockstate")?.Value
+                ?? trophy.Attribute("unlocked")?.Value
+                ?? trophy.Attribute("state")?.Value;
+            var unlocked = SteamAppIdResolver.NormalizeEarnedFlag(stateAttr) ?? false;
+            var tsAttr = trophy.Attribute("unlocked_timestamp")?.Value
+                ?? trophy.Attribute("unlock_timestamp")?.Value
+                ?? trophy.Attribute("unlocked_time")?.Value
+                ?? trophy.Attribute("timestamp")?.Value
+                ?? trophy.Attribute("unlocktime")?.Value
+                ?? trophy.Attribute("unlock_time")?.Value
+                ?? trophy.Attribute("time")?.Value;
+            var ts = unlocked ? SteamAppIdResolver.NormalizeUnixSeconds(tsAttr) : 0L;
+            states[id] = (unlocked, ts);
+        }
+        return states;
+    }
+
+    private static IReadOnlyList<PlatformAchievement> MergeUserStates(
+        IReadOnlyList<PlatformAchievement> schema,
+        Dictionary<int, (bool Earned, long Timestamp)> userStates)
+    {
+        return schema.Select(item =>
+        {
+            if (!int.TryParse(item.Id, out var id) || !userStates.TryGetValue(id, out var st))
+                return item;
+            var earned = item.Earned || st.Earned;
+            var ts = earned ? Math.Max(item.EarnedTimeUnix, st.Timestamp) : 0L;
+            return item with { Earned = earned, EarnedTimeUnix = ts };
+        }).ToArray();
+    }
+
+    private static IReadOnlyList<PlatformAchievement> AttachShadPs4Icons(
+        IReadOnlyList<PlatformAchievement> achievements,
+        string iconsDirectory)
+    {
+        return achievements.Select(item =>
+        {
+            if (!int.TryParse(item.Id, out var id)) return item;
+            var iconName = $"TROP{id:000}.PNG";
+            var iconPath = Path.Combine(iconsDirectory, iconName);
+            if (!File.Exists(iconPath))
+            {
+                iconPath = Path.Combine(iconsDirectory, $"TROP{id:000}.png");
+            }
+            return File.Exists(iconPath) ? item with { IconPath = iconPath } : item;
+        }).ToArray();
+    }
+
+    private static IReadOnlyList<(string TitleId, string? Title, string Path)> ReadKytyRegisteredGames(string configPath)
+    {
+        var results = new List<(string TitleId, string? Title, string Path)>();
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(configPath));
+        void Walk(System.Text.Json.JsonElement el)
+        {
+            if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var item in el.EnumerateArray()) Walk(item);
+                return;
+            }
+            if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+            string? path = null;
+            string? title = null;
+            string? titleId = null;
+            foreach (var prop in el.EnumerateObject())
+            {
+                if (prop.Name.Equals("path", StringComparison.OrdinalIgnoreCase)
+                    || prop.Name.Equals("game_dir", StringComparison.OrdinalIgnoreCase)
+                    || prop.Name.Equals("zar", StringComparison.OrdinalIgnoreCase))
+                    path = prop.Value.GetString();
+                else if (prop.Name.Equals("title", StringComparison.OrdinalIgnoreCase)
+                         || prop.Name.Equals("name", StringComparison.OrdinalIgnoreCase))
+                    title = prop.Value.GetString();
+                else if (prop.Name.Equals("title_id", StringComparison.OrdinalIgnoreCase)
+                         || prop.Name.Equals("titleId", StringComparison.OrdinalIgnoreCase)
+                         || prop.Name.Equals("id", StringComparison.OrdinalIgnoreCase))
+                    titleId = prop.Value.GetString();
+                else if (prop.Value.ValueKind is System.Text.Json.JsonValueKind.Array or System.Text.Json.JsonValueKind.Object)
+                    Walk(prop.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(path) && (path.EndsWith(".zar", StringComparison.OrdinalIgnoreCase) || Directory.Exists(path)))
+            {
+                var inferredId = !string.IsNullOrWhiteSpace(titleId)
+                    ? titleId.Trim()
+                    : Path.GetFileNameWithoutExtension(path);
+                if (!string.IsNullOrWhiteSpace(inferredId))
+                    results.Add((inferredId, title ?? Path.GetFileNameWithoutExtension(path), path));
+            }
+        }
+        Walk(doc.RootElement);
+        return results;
+    }
+
+    private static IReadOnlyList<PlatformAchievement> UnionAchievements(
+        IReadOnlyList<PlatformAchievement> existing,
+        IReadOnlyList<PlatformAchievement> incoming)
+    {
+        var merged = existing.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in incoming)
+        {
+            if (merged.TryGetValue(item.Id, out var cur))
+            {
+                var earned = cur.Earned || item.Earned;
+                merged[item.Id] = cur with
+                {
+                    Name = cur.Name ?? item.Name,
+                    Description = cur.Description ?? item.Description,
+                    Earned = earned,
+                    EarnedTimeUnix = earned ? Math.Max(cur.EarnedTimeUnix, item.EarnedTimeUnix) : 0,
+                    TrophyType = cur.TrophyType ?? item.TrophyType
+                };
+            }
+            else
+            {
+                merged[item.Id] = item;
+            }
+        }
+        return merged.Values.OrderBy(a => a.Id, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private static IEnumerable<string> Enumerate(string root, string pattern, int maxDepth)
@@ -289,8 +708,42 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
     {
         using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
         var root = document.RootElement;
-        if (root.ValueKind != System.Text.Json.JsonValueKind.Object
-            || !root.TryGetProperty("unlockedTrophies", out var unlockedList)
+        if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return [];
+
+        // Modern KytyPS5 _Trophies format: { "title_id": "PPSA...", "trophies": [ { "trophy_id": 0, "type": "platinum", "unlocked": true, "unlocked_timestamp": "..." } ] }
+        if (root.TryGetProperty("trophies", out var trophiesArray) && trophiesArray.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            var modern = new List<PlatformAchievement>();
+            foreach (var entry in trophiesArray.EnumerateArray())
+            {
+                if (entry.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                string? id = null;
+                if (entry.TryGetProperty("trophy_id", out var idEl)) id = idEl.ToString();
+                else if (entry.TryGetProperty("id", out var altIdEl)) id = altIdEl.ToString();
+                if (string.IsNullOrWhiteSpace(id)) continue;
+
+                var earned = entry.TryGetProperty("unlocked", out var unlEl)
+                             && (SteamAppIdResolver.NormalizeEarnedFlag(unlEl) ?? false);
+                long ts = 0;
+                if (earned)
+                {
+                    if (entry.TryGetProperty("unlocked_timestamp", out var tsEl))
+                        ts = SteamAppIdResolver.NormalizeUnixSeconds(tsEl);
+                    else if (entry.TryGetProperty("unlockedAt", out var atEl))
+                        ts = SteamAppIdResolver.NormalizeUnixSeconds(atEl);
+                }
+                var type = entry.TryGetProperty("type", out var typeEl) ? typeEl.GetString()?.ToLowerInvariant() : null;
+                var name = entry.TryGetProperty("name", out var nameEl) ? nameEl.GetString()?.Trim() : null;
+                var detail = entry.TryGetProperty("detail", out var detEl) ? detEl.GetString()?.Trim()
+                    : entry.TryGetProperty("description", out var descEl) ? descEl.GetString()?.Trim() : null;
+                var hidden = entry.TryGetProperty("hidden", out var hidEl) && hidEl.ValueKind == System.Text.Json.JsonValueKind.True;
+                modern.Add(new PlatformAchievement(id, name, detail, earned, earned ? ts : 0, TrophyType: type, Hidden: hidden));
+            }
+            return modern;
+        }
+
+        // Legacy KytyPS5 format: { "unlockedTrophies": [0, 1], "unlockedAt": { "0": 1700000000000 } }
+        if (!root.TryGetProperty("unlockedTrophies", out var unlockedList)
             || unlockedList.ValueKind != System.Text.Json.JsonValueKind.Array) return [];
 
         var unlocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -304,8 +757,8 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
         {
             foreach (var property in unlockedAt.EnumerateObject())
             {
-                if (!property.Value.TryGetInt64(out var milliseconds) || milliseconds <= 0) continue;
-                timestamps[property.Name] = milliseconds / 1000;
+                var seconds = SteamAppIdResolver.NormalizeUnixSeconds(property.Value);
+                if (seconds > 0) timestamps[property.Name] = seconds;
             }
         }
 

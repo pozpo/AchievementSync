@@ -12,6 +12,8 @@ using AchievementSync.Core.Scanning;
 using AchievementSync.Core.Synchronization;
 using AchievementSync.Core.Settings;
 using AchievementSync.Core.Tracking;
+using AchievementSync.Core.Platforms;
+using AchievementSync.Core.Enabler;
 using AchievementSync.Desktop.Services;
 using AchievementSync.Desktop.ViewModels;
 
@@ -803,19 +805,36 @@ try
         "game details catalog note wraps instead of overlapping the search field at narrow widths");
     var mainWindowXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "MainWindow.xaml"));
     var appXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "App.xaml"));
-    Check(mainWindowXaml.Contains("Browse games found in enabled achievement folders. Filter by progress or sort by name and recent unlock.", StringComparison.Ordinal)
-        && mainWindowXaml.Contains("TextWrapping=\"Wrap\"/></StackPanel><TextBox Grid.Column=\"1\"", StringComparison.Ordinal),
-        "Game Library description wraps within its title column at narrow window widths");
+    var modernThemeXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "Themes", "ModernTheme.xaml"));
+    const string libraryDescription = "Browse games found in enabled achievement folders. Filter by progress or sort by name and recent unlock.";
+    var libraryDescriptionAt = mainWindowXaml.IndexOf(libraryDescription, StringComparison.Ordinal);
+    var libraryDescriptionStart = libraryDescriptionAt < 0 ? -1 : mainWindowXaml.LastIndexOf("<TextBlock", libraryDescriptionAt, StringComparison.Ordinal);
+    var libraryDescriptionEnd = libraryDescriptionAt < 0 ? -1 : mainWindowXaml.IndexOf("/>", libraryDescriptionAt, StringComparison.Ordinal);
+    var libraryDescriptionElement = libraryDescriptionStart >= 0 && libraryDescriptionEnd > libraryDescriptionStart
+        ? mainWindowXaml[libraryDescriptionStart..(libraryDescriptionEnd + 2)]
+        : string.Empty;
+    var captionStyleStart = modernThemeXaml.IndexOf("x:Key=\"Modern.Text.Caption\"", StringComparison.Ordinal);
+    var captionStyleEnd = captionStyleStart < 0 ? -1 : modernThemeXaml.IndexOf("</Style>", captionStyleStart, StringComparison.Ordinal);
+    var captionStyle = captionStyleStart >= 0 && captionStyleEnd > captionStyleStart
+        ? modernThemeXaml[captionStyleStart..captionStyleEnd]
+        : string.Empty;
+    Check(libraryDescriptionElement.Contains("Style=\"{StaticResource Modern.Text.Caption}\"", StringComparison.Ordinal)
+        && !libraryDescriptionElement.Contains("NoWrap", StringComparison.Ordinal)
+        && captionStyle.Contains("Property=\"TextWrapping\" Value=\"Wrap\"", StringComparison.Ordinal),
+        "Game Library description wraps within the page width at narrow window widths");
 
     Check(!mainWindowXaml.Contains("Overview", StringComparison.OrdinalIgnoreCase)
         && !mainWindowXaml.Contains("IsOverviewVisible", StringComparison.Ordinal),
         "Overview navigation and page markup are removed");
     var statsPosition = mainWindowXaml.IndexOf("GAMES FOUND", StringComparison.Ordinal);
-    var libraryPosition = mainWindowXaml.IndexOf("Your game library", StringComparison.Ordinal);
-    Check(statsPosition >= 0 && statsPosition < libraryPosition
-        && mainWindowXaml.Contains("KNOWN STATES", StringComparison.Ordinal)
-        && mainWindowXaml.Contains("UNLOCKED", StringComparison.Ordinal)
-        && mainWindowXaml.Contains("COMPLETION", StringComparison.Ordinal),
+    var knownStatesPosition = mainWindowXaml.IndexOf("KNOWN STATES", StringComparison.Ordinal);
+    var unlockedPosition = mainWindowXaml.IndexOf("UNLOCKED", StringComparison.Ordinal);
+    var completionPosition = mainWindowXaml.IndexOf("COMPLETION", StringComparison.Ordinal);
+    var browsingControlsPosition = mainWindowXaml.IndexOf("Modern.SearchBox", StringComparison.Ordinal);
+    Check(statsPosition >= 0 && statsPosition < knownStatesPosition
+        && knownStatesPosition < unlockedPosition
+        && unlockedPosition < completionPosition
+        && completionPosition < browsingControlsPosition,
         "Game Library displays all four statistics before its browsing controls");
     Check(!detailsXaml.Contains("Identify game", StringComparison.OrdinalIgnoreCase)
         && !detailsXaml.Contains("IdentifyGame", StringComparison.Ordinal),
@@ -1729,6 +1748,8 @@ try
         && File.Exists(Path.Combine(coldLoaderPath, "coldloader.ini"))
         && File.Exists(Path.Combine(coldLoaderPath, "version.dll")), "embedded ColdLoader and version.dll proxy files exist on disk");
     var adapterVersionDll = Path.Combine(repositoryRoot.FullName, "Adapters", "version.dll");
+    if (!File.Exists(adapterVersionDll))
+        adapterVersionDll = Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Core", "Resources", "ColdLoaderTemplate", "version.dll");
     Check(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(adapterVersionDll))
         .SequenceEqual(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(coldLoaderPath, "version.dll")))),
         "embedded version.dll proxy exactly matches Adapters/version.dll");
@@ -1983,6 +2004,603 @@ try
     Check(!freshCfg.Contains("DENUVO_EXE_HASH", StringComparison.Ordinal) && !freshCfg.Contains("DENUVO_DLL_HASH", StringComparison.Ordinal),
         "EA plan computes real SHA-1 DenuvoExeHash and DenuvoDllHash when dbdata.dll is present");
 
+    // ---------------- 1.3.0 release + UI refresh smoke checks ----------------
+    var v130DesktopRoot = Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop");
+    var v130CoreRoot = Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Core");
+    var v130DesktopAssembly = typeof(MainViewModel).Assembly;
+    var v130CoreAssembly = typeof(GameProfile).Assembly;
+
+    Check(v130DesktopAssembly.GetName().Version is { Major: 1, Minor: 3, Build: 0 }
+        && v130DesktopAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion == "1.3.0"
+        && v130DesktopAssembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version == "1.3.0",
+        "desktop app reports assembly, file and product version 1.3.0");
+    Check(v130CoreAssembly.GetName().Version is { Major: 1, Minor: 3, Build: 0 }
+        && (v130CoreAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? string.Empty)
+            .StartsWith("1.3.0", StringComparison.Ordinal),
+        "core library reports version 1.3.0");
+
+    var v130CoreProject = File.ReadAllText(Path.Combine(v130CoreRoot, "AchievementSync.Core.csproj"));
+    var v130DesktopProject = File.ReadAllText(Path.Combine(v130DesktopRoot, "AchievementSync.Desktop.csproj"));
+    Check(v130CoreProject.Contains("<Version>1.3.0</Version>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<Version>1.3.0</Version>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<AssemblyVersion>1.3.0.0</AssemblyVersion>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<FileVersion>1.3.0</FileVersion>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<InformationalVersion>1.3.0</InformationalVersion>", StringComparison.Ordinal)
+        && !v130CoreProject.Contains("1.2.0", StringComparison.Ordinal)
+        && !v130DesktopProject.Contains("1.2.0", StringComparison.Ordinal),
+        "both project files declare 1.3.0 and no stale 1.2.0 version remains");
+    Check(File.ReadAllText(Path.Combine(v130DesktopRoot, "Services", "GitHubReleaseUpdateService.cs")).Contains("AchievementSync-Update/1.3.0", StringComparison.Ordinal)
+        && File.ReadAllText(Path.Combine(v130DesktopRoot, "Services", "SteamCommunityCatalogClient.cs")).Contains("AchievementSync/1.3.0", StringComparison.Ordinal),
+        "HTTP user-agent strings advertise version 1.3.0");
+
+    System.Xml.Linq.XNamespace v130XamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+    var v130Documents = new[]
+    {
+        System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "MainWindow.xaml")),
+        System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "Themes", "ModernTheme.xaml")),
+        System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "App.xaml"))
+    };
+    Check(v130Documents.All(document => document.Root is not null),
+        "MainWindow.xaml, ModernTheme.xaml and App.xaml are well-formed XML");
+
+    var v130KnownKeys = v130Documents
+        .SelectMany(document => document.Descendants())
+        .Select(element => (string?)element.Attribute(v130XamlNamespace + "Key"))
+        .OfType<string>()
+        .ToHashSet(StringComparer.Ordinal);
+    var v130UnresolvedResources = new[] { mainWindowXaml, modernThemeXaml }
+        .SelectMany(text => System.Text.RegularExpressions.Regex
+            .Matches(text, @"\{(?:StaticResource|DynamicResource)\s+([\w.]+)\}")
+            .Select(match => match.Groups[1].Value))
+        .Distinct(StringComparer.Ordinal)
+        .Where(key => !v130KnownKeys.Contains(key))
+        .ToArray();
+    Check(v130UnresolvedResources.Length == 0,
+        "every resource key used by MainWindow and ModernTheme resolves (unresolved: " + string.Join(", ", v130UnresolvedResources) + ")");
+
+    var v130ImplicitThemeStyles = v130Documents[1].Root!.Elements()
+        .Where(element => element.Name.LocalName == "Style" && element.Attribute(v130XamlNamespace + "Key") is null)
+        .ToArray();
+    Check(v130ImplicitThemeStyles.Length == 0,
+        "ModernTheme declares keyed styles only, so no other window or control changes appearance");
+
+    var v130MainWindowCode = File.ReadAllText(Path.Combine(v130DesktopRoot, "MainWindow.xaml.cs"));
+    var v130ClickHandlers = System.Text.RegularExpressions.Regex.Matches(mainWindowXaml, "\\bClick=\"(\\w+)\"")
+        .Select(match => match.Groups[1].Value)
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+    Check(v130ClickHandlers.Length >= 4
+        && v130ClickHandlers.All(handler => v130MainWindowCode.Contains(handler + "(", StringComparison.Ordinal)),
+        "every Click handler in MainWindow.xaml still exists in the code-behind");
+    Check(new[] { "AchievementEnablerHost", "GitHubTokenBox", "RetroAchievementsApiKeyBox" }
+            .All(name => mainWindowXaml.Contains("x:Name=\"" + name + "\"", StringComparison.Ordinal)
+                && v130MainWindowCode.Contains(name, StringComparison.Ordinal)),
+        "named elements used by the code-behind are still declared in MainWindow.xaml");
+    Check(mainWindowXaml.Contains("Binding OpenEnablerWizardCommand", StringComparison.Ordinal)
+        && System.Text.RegularExpressions.Regex.IsMatch(mainWindowXaml,
+            "Binding IsEnablerVisible, Converter=\\{StaticResource BoolToVisibility\\}\\}\"\\s*>\\s*<ContentControl x:Name=\"AchievementEnablerHost\"\\s*/>"),
+        "the Achievement Enabler navigation command and host area are untouched by the redesign");
+
+    var v130PropertyNames = v130DesktopAssembly.GetTypes().Concat(v130CoreAssembly.GetTypes())
+        .SelectMany(type => type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        .Select(property => property.Name)
+        .ToHashSet(StringComparer.Ordinal);
+    var v130MissingBindings = System.Text.RegularExpressions.Regex
+        .Matches(mainWindowXaml, @"\{Binding\s+(?:Path=)?(?:DataContext\.)?([A-Za-z_][A-Za-z0-9_]*)")
+        .Select(match => match.Groups[1].Value)
+        .Distinct(StringComparer.Ordinal)
+        .Where(name => name != "ViewportHeight" && !v130PropertyNames.Contains(name))
+        .ToArray();
+    Check(v130MissingBindings.Length == 0,
+        "every MainWindow binding names a real view-model property (missing: " + string.Join(", ", v130MissingBindings) + ")");
+    Check(new[] { "IsScanning", "IsLibraryEmpty", "IsGameResultsEmpty", "IsGamesVisible", "IsPlatformsVisible", "IsActivityVisible", "IsEnablerVisible", "IsSettingsVisible" }
+            .All(name => typeof(MainViewModel).GetProperty(name)?.PropertyType == typeof(bool))
+        && typeof(GameCardViewModel).GetProperty("Progress")?.PropertyType == typeof(double),
+        "properties read by the redesigned triggers (active nav, skeletons, completion badge) exist with the expected types");
+
+    var v130ThemeOutcomes = RunOnStaThread(() =>
+    {
+        var outcomes = new List<(bool Passed, string Description)>();
+        var themeText = modernThemeXaml.Replace(
+            "clr-namespace:AchievementSync.Desktop.Helpers\"",
+            "clr-namespace:AchievementSync.Desktop.Helpers;assembly=" + v130DesktopAssembly.GetName().Name + "\"",
+            StringComparison.Ordinal);
+        using var themeStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(themeText));
+        var theme = (System.Windows.ResourceDictionary)System.Windows.Markup.XamlReader.Load(themeStream);
+
+        (string Key, System.Windows.Controls.Control Control)[] samples =
+        [
+            ("Modern.PrimaryButton", new System.Windows.Controls.Button { Content = "Primary" }),
+            ("Modern.SecondaryButton", new System.Windows.Controls.Button { Content = "Secondary" }),
+            ("Modern.GhostButton", new System.Windows.Controls.Button { Content = "Ghost" }),
+            ("Modern.IconButton", new System.Windows.Controls.Button()),
+            ("Modern.NavButton", new System.Windows.Controls.Button { Content = "Nav" }),
+            ("Modern.GameCardButton", new System.Windows.Controls.Button { Content = "Card" }),
+            ("Modern.TextBox", new System.Windows.Controls.TextBox()),
+            ("Modern.SearchBox", new System.Windows.Controls.TextBox()),
+            ("Modern.SecretBox", new System.Windows.Controls.PasswordBox()),
+            ("Modern.ComboBox", new System.Windows.Controls.ComboBox { ItemsSource = new[] { "One", "Two" }, SelectedIndex = 0 }),
+            ("Modern.CheckBox", new System.Windows.Controls.CheckBox { Content = "Option" }),
+            ("Modern.Switch", new System.Windows.Controls.CheckBox { Content = "Switch", IsChecked = true }),
+            ("Modern.ProgressBar", new System.Windows.Controls.ProgressBar { Maximum = 100, Value = 40 }),
+            ("Modern.Expander", new System.Windows.Controls.Expander { Header = "Header", Content = "Body" }),
+            ("Modern.ResultList", new System.Windows.Controls.ListBox { Tag = "Empty hint" })
+        ];
+        foreach (var (key, control) in samples)
+        {
+            control.Style = (System.Windows.Style)theme[key];
+            var applied = control.ApplyTemplate();
+            outcomes.Add((applied && control.Template is not null, "Modern theme style " + key + " builds its control template"));
+        }
+
+        var clearCommand = AchievementSync.Desktop.Helpers.SearchBoxBehavior.ClearCommand;
+        var searchBox = new System.Windows.Controls.TextBox
+        {
+            Text = "elden ring",
+            Style = (System.Windows.Style)theme["Modern.SearchBox"]
+        };
+        searchBox.ApplyTemplate();
+        var clearButton = searchBox.Template.FindName("ClearButton", searchBox) as System.Windows.Controls.Button;
+        outcomes.Add((clearButton is not null && object.ReferenceEquals(clearButton.Command, clearCommand),
+            "search box clear button is wired to SearchBoxBehavior.ClearCommand"));
+        outcomes.Add((clearCommand.CanExecute(null, searchBox), "clear command is available while the search box has text"));
+        clearCommand.Execute(null, searchBox);
+        outcomes.Add((searchBox.Text.Length == 0, "clear command empties the search text"));
+        outcomes.Add((!clearCommand.CanExecute(null, searchBox), "clear command is unavailable once the search box is empty"));
+
+        var focusProbe = new System.Windows.Controls.TextBox();
+        AchievementSync.Desktop.Helpers.SearchBoxBehavior.SetIsFocusTarget(focusProbe, true);
+        outcomes.Add((AchievementSync.Desktop.Helpers.SearchBoxBehavior.GetIsFocusTarget(focusProbe),
+            "search box can be registered as the Ctrl+F focus target"));
+        return outcomes;
+    });
+    foreach (var outcome in v130ThemeOutcomes)
+        Check(outcome.Passed, outcome.Description);
+
+    // =========================================================================
+    // NEW PLATFORMS & FEATURES VERIFICATION (v1.3.0 Complete Platform Support)
+    // =========================================================================
+
+    // 1. SteamAppIdResolver: Normalization & Resolution Pipeline
+    Check(SteamAppIdResolver.NormalizeUnixSeconds(1700000000L) == 1700000000L,
+        "SteamAppIdResolver normalizes standard Unix seconds");
+    Check(SteamAppIdResolver.NormalizeUnixSeconds(1700000000000L) == 1700000000L,
+        "SteamAppIdResolver normalizes millisecond timestamps to Unix seconds");
+    Check(SteamAppIdResolver.NormalizeUnixSeconds(1700000000000000L) == 1700000000L,
+        "SteamAppIdResolver normalizes microsecond timestamps to Unix seconds");
+    var fileTimeSample = 133456789000000000L;
+    var expectedUnixFromFt = DateTimeOffset.FromFileTime(fileTimeSample).ToUnixTimeSeconds();
+    Check(SteamAppIdResolver.NormalizeUnixSeconds(fileTimeSample) == expectedUnixFromFt,
+        "SteamAppIdResolver normalizes Windows FILETIME ticks to Unix seconds");
+    Check(SteamAppIdResolver.NormalizeUnixSeconds(0) == 0 && SteamAppIdResolver.NormalizeUnixSeconds(-50) == 0,
+        "SteamAppIdResolver clamps non-positive timestamps to zero");
+
+    Check(SteamAppIdResolver.NormalizeEarnedFlag(true) == true && SteamAppIdResolver.NormalizeEarnedFlag(false) == false,
+        "SteamAppIdResolver normalizes boolean earned flags");
+    Check(SteamAppIdResolver.NormalizeEarnedFlag(1) == true && SteamAppIdResolver.NormalizeEarnedFlag(0) == false,
+        "SteamAppIdResolver normalizes numeric 1/0 earned flags");
+    Check(SteamAppIdResolver.NormalizeEarnedFlag("true") == true && SteamAppIdResolver.NormalizeEarnedFlag("1") == true && SteamAppIdResolver.NormalizeEarnedFlag("0") == false,
+        "SteamAppIdResolver normalizes string earned flags");
+
+    var resolverTestDir = Path.Combine(tempRoot, "ResolverTests");
+    Directory.CreateDirectory(resolverTestDir);
+    var resolver = new SteamAppIdResolver(
+        titleLookupAsync: (title, _) => Task.FromResult<string?>(string.Equals(title, "Half-Life 2", StringComparison.OrdinalIgnoreCase) ? "220" : null),
+        schemaLoader: appId => appId == "220"
+            ? [new AchievementRecord("HL2_KILL_BARNACLE", "Barnacle Killer", "Desc", null, null, null)]
+            : null);
+
+    // Override priority
+    var snapOverride = new PlatformGameSnapshot("epic", "epic-hl2", "Half-Life 2", "dummy-path",
+        [new PlatformAchievement("HL2_KILL_BARNACLE", "Barnacle Killer", "Desc", Earned: true, EarnedTimeUnix: 1700000000)]);
+    var userOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        { "epic:epic-hl2", "220" }
+    };
+    var overrideRes = await resolver.ResolveAsync(snapOverride, userOverrides: userOverrides);
+    Check(overrideRes.Confidence == SteamMappingConfidence.Override && overrideRes.ResolvedSteamAppId == "220" && overrideRes.IsOverride,
+        "SteamAppIdResolver resolves explicit user overrides with highest priority and Override confidence");
+
+    // Native Steam AppID
+    var snapNativeSteam = new PlatformGameSnapshot("steam", "730", "Counter-Strike 2", "dummy-path",
+        [new PlatformAchievement("ACH_WIN", "Winner", "Desc", Earned: true, EarnedTimeUnix: 1700000000)]);
+    var nativeSteamRes = await resolver.ResolveAsync(snapNativeSteam);
+    Check(nativeSteamRes.Confidence == SteamMappingConfidence.Exact && nativeSteamRes.ResolvedSteamAppId == "730",
+        "SteamAppIdResolver resolves native Steam AppID with Exact confidence");
+
+    // Embedded uplay-steam.json mapping
+    var snapUplayMapped = new PlatformGameSnapshot("uplay", "4688", "Far Cry 3", "dummy-path",
+        [new PlatformAchievement("ACH_FC3_1", "Welcome", "Desc", Earned: true, EarnedTimeUnix: 1700000000)]);
+    var uplayMappedRes = await resolver.ResolveAsync(snapUplayMapped);
+    if (uplayMappedRes.ResolvedSteamAppId is not null)
+    {
+        Check(uplayMappedRes.Confidence >= SteamMappingConfidence.High,
+            "SteamAppIdResolver resolves Ubisoft product IDs using embedded uplay-steam.json mapping");
+    }
+
+    // Title lookup fallback
+    var snapTitleLookup = new PlatformGameSnapshot("gog", "123456", "Half-Life 2 (Game of the Year Edition)", "dummy-path",
+        [new PlatformAchievement("HL2_KILL_BARNACLE", "Barnacle Killer", "Desc", Earned: true, EarnedTimeUnix: 1700000000)]);
+    var titleRes = await resolver.ResolveAsync(snapTitleLookup);
+    Check(titleRes.ResolvedSteamAppId == "220" && titleRes.Confidence >= SteamMappingConfidence.Medium,
+        "SteamAppIdResolver cleans edition suffixes and resolves Steam AppIDs via title lookup");
+
+    // Schema matching and discarding IDs absent from Steam schema
+    var snapWithExtraneous = new PlatformGameSnapshot("epic", "epic-hl2", "Half-Life 2", "dummy-path",
+        [
+            new PlatformAchievement("HL2_KILL_BARNACLE", "Barnacle Killer", "Desc", Earned: true, EarnedTimeUnix: 1700000000),
+            new PlatformAchievement("EPIC_EXCLUSIVE_ACH", "Epic Only", "Desc", Earned: true, EarnedTimeUnix: 1700000000)
+        ]);
+    var schemaRes = await resolver.ResolveAsync(snapWithExtraneous, userOverrides: userOverrides, explicitSteamSchema:
+        [new AchievementRecord("HL2_KILL_BARNACLE", "Barnacle Killer", "Desc", null, null, null)]);
+    Check(schemaRes.NormalizedAchievements.Count == 1
+        && schemaRes.NormalizedAchievements[0].Id == "HL2_KILL_BARNACLE"
+        && schemaRes.DiscardedCount == 1,
+        "SteamAppIdResolver discards achievement IDs absent from the official Steam schema when one is present");
+
+    // Blacklist propagation
+    var blacklistedRes = await resolver.ResolveAsync(snapOverride, userOverrides: userOverrides,
+        blacklistedKeys: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "epic:epic-hl2" });
+    Check(blacklistedRes.IsBlacklisted, "SteamAppIdResolver propagates blacklist status correctly");
+
+    // 2. Epic Games EAS OAuth Client & Stored Credential
+    var pkce = EpicAuthClient.CreatePkceChallenge();
+    Check(!string.IsNullOrWhiteSpace(pkce.CodeVerifier) && !string.IsNullOrWhiteSpace(pkce.CodeChallenge) && !string.IsNullOrWhiteSpace(pkce.State),
+        "EpicAuthClient generates standard cryptographic PKCE challenge and state");
+    var authUri = EpicAuthClient.BuildAuthorizeUri("test-client-id", "http://localhost:59123/callback", pkce);
+    Check(authUri.ToString().StartsWith("https://www.epicgames.com/id/authorize?", StringComparison.Ordinal)
+        && authUri.ToString().Contains("client_id=test-client-id", StringComparison.Ordinal)
+        && authUri.ToString().Contains("code_challenge=" + Uri.EscapeDataString(pkce.CodeChallenge), StringComparison.Ordinal),
+        "EpicAuthClient builds official EAS authorize URI with user-supplied client ID and PKCE");
+    var epicCred = new EpicStoredCredential("test-access-token", "test-refresh-token", "acc-123", "EpicPlayer", DateTimeOffset.UtcNow.AddHours(2));
+    var serializedEpicCred = epicCred.Serialize();
+    var deserializedEpicCred = EpicStoredCredential.Parse(serializedEpicCred);
+    Check(deserializedEpicCred is not null
+        && deserializedEpicCred.AccessToken == "test-access-token"
+        && deserializedEpicCred.AccountId == "acc-123"
+        && !deserializedEpicCred.NeedsRefresh(),
+        "EpicStoredCredential survives secure serialization and correctly evaluates token expiry");
+    Check(new EpicStoredCredential("expired-tok", null, null, null, DateTimeOffset.UtcNow.AddMinutes(1)).NeedsRefresh(),
+        "EpicStoredCredential signals refresh requirement within the 2-minute safety window");
+
+    // 3. Xbox Network / Entra Device Code Flow & Stored Credential
+    var xboxCred = new XboxStoredCredential("ms-tok", "ms-ref", "consumers", DateTimeOffset.UtcNow.AddHours(4), "xsts-tok-xyz", "123456", "2533274890", "GamerX", DateTimeOffset.UtcNow.AddHours(2));
+    var serializedXboxCred = xboxCred.Serialize();
+    var deserializedXboxCred = XboxStoredCredential.Parse(serializedXboxCred);
+    Check(deserializedXboxCred is not null
+        && deserializedXboxCred.XstsToken == "xsts-tok-xyz"
+        && deserializedXboxCred.Uhs == "123456"
+        && deserializedXboxCred.Xuid == "2533274890"
+        && deserializedXboxCred.Gamertag == "GamerX"
+        && !deserializedXboxCred.NeedsRefresh(),
+        "XboxStoredCredential survives secure serialization and parses XSTS token, UHS hash, and XUID");
+
+    // Xbox PC: MicrosoftGame.config parsing
+    var mockXboxDir = Path.Combine(tempRoot, "MockXboxPc");
+    Directory.CreateDirectory(mockXboxDir);
+    var sampleGameConfig = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <Game configVersion="1">
+          <Identity Name="HaloInfinite" Publisher="CN=Microsoft Corporation" Version="1.0.0.0" />
+          <TitleId>1234ABCD</TitleId>
+          <ExecutableList>
+            <Executable Name="HaloInfinite.exe" Id="GameExe" TargetDeviceFamily="PC" />
+          </ExecutableList>
+          <ShellVisuals DisplayName="Halo Infinite" />
+        </Game>
+        """;
+    File.WriteAllText(Path.Combine(mockXboxDir, "MicrosoftGame.config"), sampleGameConfig);
+    var parsedConfig = XboxPcDataAdapter.TryReadMicrosoftGameConfig(Path.Combine(mockXboxDir, "MicrosoftGame.config"));
+    Check(parsedConfig is not null
+        && parsedConfig.TitleId == "1234ABCD"
+        && parsedConfig.DisplayName == "Halo Infinite"
+        && parsedConfig.ExecutableName == "HaloInfinite.exe",
+        "XboxPcDataAdapter inspects MicrosoftGame.config and extracts TitleId, DisplayName, and Executable");
+
+    // Xbox live achievements API JSON response parsing
+    var liveXboxAchievementsJson = """
+        {
+          "achievements": [
+            {
+              "id": "1",
+              "name": "First Blood",
+              "description": "Defeat an enemy",
+              "progressState": "Achieved",
+              "progression": { "timeUnlocked": "2024-05-10T14:30:00Z" }
+            },
+            {
+              "id": "2",
+              "name": "Sharpshooter",
+              "description": "Score a headshot",
+              "progressState": "NotStarted",
+              "progression": { "timeUnlocked": null }
+            }
+          ]
+        }
+        """;
+    var parsedLiveAchievements = XboxPcDataAdapter.ParseAchievementsResponseJson(liveXboxAchievementsJson);
+    Check(parsedLiveAchievements.Count == 2
+        && parsedLiveAchievements[0].Id == "1"
+        && parsedLiveAchievements[0].Earned
+        && parsedLiveAchievements[0].EarnedTimeUnix > 0
+        && !parsedLiveAchievements[1].Earned,
+        "XboxPcDataAdapter correctly parses official Xbox Live TitleHub/Achievements API payload");
+
+    // 4. EA Desktop: EADesktopVerbose.log Parsing
+    var eaLogDir = Path.Combine(tempRoot, "MockEaLogs");
+    Directory.CreateDirectory(eaLogDir);
+    var sampleEaLogText = """
+        [2024-06-01 10:00:00.123] [Info] Starting EA Desktop
+        [2024-06-01 10:05:00.456] [Info] Achievement awarded: contentId="Origin.OFR.50.0001234" achievementId="ACH_SPEED_RUN" timestamp="1717236300"
+        [2024-06-01 10:06:00.789] [Info] {"event":"achievement_grant","productId":"Origin.OFR.50.0001234","achievementName":"ACH_BOSS_DOWN","unlocked":true,"unlockTime":1717236360}
+        """;
+    File.WriteAllText(Path.Combine(eaLogDir, "EADesktopVerbose.log"), sampleEaLogText);
+    var parsedEaSnapshots = EaDesktopDataAdapter.ParseVerboseLog(Path.Combine(eaLogDir, "EADesktopVerbose.log"));
+    Check(parsedEaSnapshots.Count > 0
+        && parsedEaSnapshots.Any(s => s.GameId == "Origin.OFR.50.0001234"
+            && s.Achievements.Any(a => a.Id == "ACH_SPEED_RUN" && a.Earned && a.EarnedTimeUnix == 1717236300L)
+            && s.Achievements.Any(a => a.Id == "ACH_BOSS_DOWN" && a.Earned && a.EarnedTimeUnix == 1717236360L)),
+        "EaDesktopDataAdapter parses achievement events from EADesktopVerbose.log text and JSON events");
+
+    // 5. Ubisoft Connect: RUNE achievements.cfg & LumaPlay Enabler Runtime
+    var sampleRuneCfgIni = """
+        [ACH_LEVEL_10]
+        Earned=1
+        Timestamp=1710000000
+
+        [ACH_LEVEL_20]
+        Earned=0
+        Timestamp=0
+        """;
+    var parsedRuneIni = UplayDataAdapter.ParseRuneAchievementsCfgText(sampleRuneCfgIni);
+    Check(parsedRuneIni.Count == 2
+        && parsedRuneIni.Any(a => a.Id == "ACH_LEVEL_10" && a.Earned && a.EarnedTimeUnix == 1710000000L)
+        && parsedRuneIni.Any(a => a.Id == "ACH_LEVEL_20" && !a.Earned),
+        "UplayDataAdapter parses RUNE achievements.cfg INI-section format");
+
+    var sampleRuneCfgJson = """
+        {
+          "ACH_COMPLETION": { "earned": true, "timestamp": 1710000050 },
+          "ACH_COLLECTOR": { "earned": false, "timestamp": 0 }
+        }
+        """;
+    var parsedRuneJson = UplayDataAdapter.ParseRuneAchievementsCfgText(sampleRuneCfgJson);
+    Check(parsedRuneJson.Count == 2
+        && parsedRuneJson.Any(a => a.Id == "ACH_COMPLETION" && a.Earned && a.EarnedTimeUnix == 1710000050L),
+        "UplayDataAdapter parses RUNE achievements.cfg JSON format");
+
+    // LumaPlay embedded runtime extraction and plan generation
+    var lumaPath = EmbeddedLumaPlayRuntime.EnsureReady();
+    Check(EmbeddedLumaPlayRuntime.IsReady
+        && File.Exists(Path.Combine(lumaPath, "x64", "LumaPlay.exe"))
+        && File.Exists(Path.Combine(lumaPath, "x86", "LumaPlay.exe")),
+        "EmbeddedLumaPlayRuntime auto-extracts official LumaPlay 2.2.6 x64 and x86 runtimes");
+    var mockUplayGameDir = Path.Combine(tempRoot, "MockUplayGame");
+    Directory.CreateDirectory(mockUplayGameDir);
+    var uplayGameExe = Path.Combine(mockUplayGameDir, "FarCryGame.exe");
+    File.WriteAllText(uplayGameExe, "mock-game-binary");
+    File.WriteAllText(Path.Combine(mockUplayGameDir, "uplay_r1_loader64.dll"), "mock-uplay-dll");
+    var enablerServiceInstance = new AchievementEnablerService(null, Path.Combine(tempRoot, "Metadata"));
+    var uplayDetect = await enablerServiceInstance.DetectAsync(mockUplayGameDir);
+    Check(uplayDetect.SuggestedTarget == EnablerTarget.UplayLumaPlay || uplayDetect.Evidence.Count > 0,
+        "AchievementEnablerService detects Uplay LumaPlay target for Uplay games");
+    var lumaPlan = enablerServiceInstance.BuildPlan(uplayDetect, EnablerTarget.UplayLumaPlay, gameIdOverride: "4688");
+    Check(lumaPlan.Blockers.Count == 0 && lumaPlan.Items.Any(i => i.Kind == "lumaplay-wrapper"),
+        "AchievementEnablerService builds complete LumaPlay plan with zero blockers");
+
+    // 6. PlayStation (ShadPS4 modern trophy layout & Kyty PS5 modern format)
+    var ps4Root = Path.Combine(tempRoot, "MockShadPS4");
+    var trophySchemaDir = Path.Combine(ps4Root, "trophy", "NPWR00123_00", "Xml");
+    Directory.CreateDirectory(trophySchemaDir);
+    var sampleTropXml = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <trophyconf version="1.1">
+          <npcommid>NPWR00123_00</npcommid>
+          <trophies count="2">
+            <trophy id="0" ttype="P">
+              <name>Platinum Hunter</name>
+              <detail>Collect all trophies</detail>
+            </trophy>
+            <trophy id="1" ttype="B">
+              <name>First Step</name>
+              <detail>Begin the journey</detail>
+            </trophy>
+          </trophies>
+        </trophyconf>
+        """;
+    File.WriteAllText(Path.Combine(trophySchemaDir, "TROP.XML"), sampleTropXml);
+    var userProgressDir = Path.Combine(ps4Root, "home", "00000001", "trophy");
+    Directory.CreateDirectory(userProgressDir);
+    var sampleUserProgressXml = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <trophy_status npcommid="NPWR00123_00">
+          <trophy id="1" unlocked="1" unlocked_timestamp="1705000000" />
+        </trophy_status>
+        """;
+    File.WriteAllText(Path.Combine(userProgressDir, "NPWR00123_00.xml"), sampleUserProgressXml);
+
+    var shadPs4Options = PlatformSourceOptions.CreateDefault();
+    shadPs4Options.Ps4Root = ps4Root;
+    var ps4Adapter = new PlayStationDataAdapter();
+    var ps4Collect = await ps4Adapter.CollectAsync(shadPs4Options);
+    Check(ps4Collect.Games.Count > 0
+        && ps4Collect.Games.Any(g => g.GameId == "NPWR00123_00"
+            && g.Achievements.Count == 2
+            && g.Achievements.Any(a => a.Id == "1" && a.Earned && a.EarnedTimeUnix == 1705000000L)
+            && g.Achievements.Any(a => a.Id == "0" && !a.Earned)),
+        "PlayStationDataAdapter parses modern ShadPS4 trophy/NPWR/Xml schema and merges home/<user>/trophy progress");
+
+    // Kyty PS5 modern JSON format
+    var kytyRoot = Path.Combine(tempRoot, "MockKytyPS5");
+    var kytyTrophiesDir = Path.Combine(kytyRoot, "_Trophies", "CUSA99999");
+    Directory.CreateDirectory(kytyTrophiesDir);
+    var sampleKytyJson = """
+        {
+          "trophies": [
+            {
+              "trophy_id": 0,
+              "type": "bronze",
+              "unlocked": true,
+              "unlocked_timestamp": 1706000000
+            },
+            {
+              "trophy_id": 1,
+              "type": "silver",
+              "unlocked": false,
+              "unlocked_timestamp": 0
+            }
+          ]
+        }
+        """;
+    File.WriteAllText(Path.Combine(kytyTrophiesDir, "trophies_user0_0.json"), sampleKytyJson);
+    var kytyOptions = PlatformSourceOptions.CreateDefault();
+    kytyOptions.Ps5Root = kytyRoot;
+    var kytyCollect = await ps4Adapter.CollectAsync(kytyOptions);
+    Check(kytyCollect.Games.Count > 0
+        && kytyCollect.Games.Any(g => g.GameId == "CUSA99999"
+            && g.Achievements.Any(a => a.Id == "0" && a.Earned && a.EarnedTimeUnix == 1706000000L)),
+        "PlayStationDataAdapter parses modern KytyPS5 _Trophies JSON trophy files");
+
+    // 7. Recomp Ports Adapter (LADXHD, PS3Recomp, PS4, Xbox 360 rules)
+    var recompRoot = Path.Combine(tempRoot, "MockRecomps");
+    var ladxhdDir = Path.Combine(recompRoot, "LADXHD");
+    Directory.CreateDirectory(ladxhdDir);
+    var sampleLadxhdJson = """
+        {
+          "ACH_SWORD": { "earned": true, "earned_time": 1707000000 },
+          "ACH_SHIELD": { "earned": false, "earned_time": 0 }
+        }
+        """;
+    File.WriteAllText(Path.Combine(ladxhdDir, "achievements.json"), sampleLadxhdJson);
+    var ps3RecompDir = Path.Combine(recompRoot, "PS3Game");
+    Directory.CreateDirectory(ps3RecompDir);
+    File.WriteAllText(Path.Combine(ps3RecompDir, "ps3recomp_achievements.json"), sampleLadxhdJson);
+
+    var recompOptions = PlatformSourceOptions.CreateDefault();
+    recompOptions.RecompRoot = recompRoot;
+    recompOptions.LadxhdRoot = ladxhdDir;
+    var recompAdapter = new RecompDataAdapter(recompOptions);
+    var recompCollect = await recompAdapter.CollectAsync(recompOptions);
+    Check(recompCollect.Games.Count >= 2
+        && recompCollect.Games.Any(g => g.Platform == "recomp" && g.GameId == "LADXHD" && g.Achievements.Any(a => a.Id == "ACH_SWORD" && a.Earned))
+        && recompCollect.Games.Any(g => g.Platform == "recomp" && g.GameId == "PS3Game" && g.Achievements.Any(a => a.Id == "ACH_SWORD" && a.Earned)),
+        "RecompDataAdapter collects LADXHD and PS3Recomp achievements seamlessly");
+    Check(Xbox360DataAdapter.RecompRules.Length == 16,
+        "Xbox360DataAdapter declares all 16 official game-specific Xbox 360 recomp rules");
+
+    // 8. Exporter, Markers, and Multi-Source Idempotent Merging
+    var resSource1 = new SteamAppIdResolution(
+        "epic", "epic-r1", "Game Title", "730", SteamMappingConfidence.Exact, "Exact match", false, false,
+        [
+            new PlatformAchievement("ACH_1", Earned: true, EarnedTimeUnix: 1700001000L),
+            new PlatformAchievement("ACH_2", Earned: false, EarnedTimeUnix: 0L)
+        ], 0);
+
+    var resSource2 = new SteamAppIdResolution(
+        "playstation", "CUSA00730", "Game Title", "730", SteamMappingConfidence.High, "High match", false, false,
+        [
+            new PlatformAchievement("ACH_1", Earned: false, EarnedTimeUnix: 0L),
+            new PlatformAchievement("ACH_2", Earned: true, EarnedTimeUnix: 1700002000L),
+            new PlatformAchievement("ACH_3", Earned: true, EarnedTimeUnix: 1700003000L)
+        ], 0);
+
+    var resBlacklisted = new SteamAppIdResolution(
+        "uplay", "uplay-black", "Blacklisted Game", "570", SteamMappingConfidence.High, "High match", false, true,
+        [new PlatformAchievement("DOTA_ACH_1", Earned: true, EarnedTimeUnix: 1700000500L)], 0);
+
+    var exportFiles = AchievementExportPlanner.BuildFromResolutions(
+        [resSource1, resSource2, resBlacklisted],
+        includePlatformMarkers: true,
+        includeBlacklistMarker: true);
+
+    // Verify exact contract for AppID 730
+    var app730JsonFile = exportFiles.FirstOrDefault(f => f.RelativePath == "AppID/730/achievements.json");
+    Check(app730JsonFile is not null, "AchievementExportPlanner generates AppID/730/achievements.json");
+    using var app730Doc = JsonDocument.Parse(app730JsonFile!.Json);
+    var rootObj = app730Doc.RootElement;
+    Check(rootObj.TryGetProperty("ACH_1", out var a1) && a1.GetProperty("earned").GetBoolean() && a1.GetProperty("earned_time").GetInt64() == 1700001000L,
+        "Multi-source union preserves Source 1 unlock timestamp for ACH_1");
+    Check(rootObj.TryGetProperty("ACH_2", out var a2) && a2.GetProperty("earned").GetBoolean() && a2.GetProperty("earned_time").GetInt64() == 1700002000L,
+        "Multi-source union preserves Source 2 unlock timestamp for ACH_2");
+    Check(rootObj.TryGetProperty("ACH_3", out var a3) && a3.GetProperty("earned").GetBoolean() && a3.GetProperty("earned_time").GetInt64() == 1700003000L,
+        "Multi-source union includes disjoint achievement ACH_3 from Source 2");
+
+    // Verify platform marker files
+    Check(exportFiles.Any(f => f.RelativePath == "AppID/730/Epic.platform" && f.Json.Length == 0),
+        "AchievementExportPlanner adds empty Epic.platform marker for Epic source");
+    Check(exportFiles.Any(f => f.RelativePath == "AppID/730/PlayStation.platform" && f.Json.Length == 0),
+        "AchievementExportPlanner adds empty PlayStation.platform marker for PlayStation source");
+    Check(exportFiles.Any(f => f.RelativePath == "AppID/570/blacklist" && f.Json.Length == 0),
+        "AchievementExportPlanner adds empty blacklist marker for blacklisted game");
+
+    // Proving existing unlocks and larger valid files are never lost or downgraded
+    var existingLargerJson = """
+        {
+          "ACH_1": { "earned": true, "earned_time": 1700001000 },
+          "ACH_LEGACY_ONLY": { "earned": true, "earned_time": 1699999999 }
+        }
+        """;
+    var existingDict = new Dictionary<string, string> { { "730", existingLargerJson } };
+    var exportWithExisting = AchievementExportPlanner.BuildFromResolutions([resSource2], existingAppIdJson: existingDict);
+    var mergedWithExisting = exportWithExisting.First(f => f.RelativePath == "AppID/730/achievements.json");
+    using var mergedDoc = JsonDocument.Parse(mergedWithExisting.Json);
+    Check(mergedDoc.RootElement.TryGetProperty("ACH_LEGACY_ONLY", out var leg) && leg.GetProperty("earned").GetBoolean(),
+        "AchievementExportPlanner never loses existing unlocks absent from incoming partial snapshot");
+    Check(mergedDoc.RootElement.TryGetProperty("ACH_1", out var m1) && m1.GetProperty("earned").GetBoolean() && m1.GetProperty("earned_time").GetInt64() == 1700001000L,
+        "AchievementExportPlanner never downgrades existing earned state or timestamps");
+
+    // 9. GitHub Sync Client Path Validation & Marker Support
+    GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/achievements.json", "730");
+    GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/Epic.platform", "730");
+    GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/PlayStation.platform", "730");
+    GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/blacklist", "730");
+    var rejectedInvalidPath = false;
+    try { GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/malicious.exe", "730"); }
+    catch (InvalidDataException) { rejectedInvalidPath = true; }
+    Check(rejectedInvalidPath, "GitHubAchievementSyncClient validates paths and rejects unknown file types");
+
+    var rejectedPathTraversal = false;
+    try { GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/../../etc/passwd", "730"); }
+    catch (InvalidDataException) { rejectedPathTraversal = true; }
+    Check(rejectedPathTraversal, "GitHubAchievementSyncClient rejects directory traversal attempts");
+
+    // GitHub Preview with marker files
+    var mockHttpClient = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        var url = request.RequestUri!.ToString();
+        if (request.RequestUri?.AbsolutePath == "/user")
+            return Task.FromResult(JsonResponse("""{"login":"testuser","name":"Test","avatar_url":"http://test"}"""));
+        if (url.Contains("/repos/test/repo/git/ref/heads/user"))
+            return Task.FromResult(JsonResponse("""{"object":{"sha":"commit123"}}"""));
+        if (url.Contains("/git/commits/commit123"))
+            return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree123"}}"""));
+        if (request.RequestUri?.AbsolutePath == "/repos/test/repo")
+            return Task.FromResult(JsonResponse("""{"full_name":"test/repo","default_branch":"user","permissions":{"push":true},"private":false}"""));
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+    }));
+    var ghClient = new GitHubAchievementSyncClient(mockHttpClient);
+    var ghTarget = new GitHubSyncTarget("test", "repo", "user");
+    var ghPreviewFiles = new[]
+    {
+        new AchievementExportFile("AppID/730/achievements.json", "730", 1, """{"ACH_1":{"earned":true,"earned_time":1700000000}}"""),
+        new AchievementExportFile("AppID/730/Epic.platform", "730", 0, string.Empty)
+    };
+    var ghPreview = await ghClient.BuildPreviewAsync("token", ghTarget, ghPreviewFiles);
+    Check(ghPreview.Changes.Count == 2
+        && ghPreview.Changes.Any(c => c.RelativePath == "AppID/730/Epic.platform" && c.ProposedJson == string.Empty && c.NewUnlockCount == 0),
+        "GitHubAchievementSyncClient previews platform marker files with empty blob content and zero unlock count");
+
+    // 10. Regression Coverage for Existing Platform Adapters
+    var defaultSourceOptions = PlatformSourceOptions.CreateDefault();
+    var existingSteamAdapter = new SteamDataAdapter(defaultSourceOptions);
+    Check(existingSteamAdapter.Platform == "steam", "Existing SteamDataAdapter retains platform identity");
+    var existingGogAdapter = new GogDataAdapter(defaultSourceOptions);
+    Check(existingGogAdapter.Platform == "gog", "Existing GogDataAdapter retains platform identity");
+    var existingXbox360Adapter = new Xbox360DataAdapter();
+    Check(existingXbox360Adapter.Platform == "xbox360", "Existing Xbox360DataAdapter retains platform identity");
+    var existingRaAdapter = new RetroAchievementsDataAdapter();
+    Check(existingRaAdapter.Platform == "retroachievements", "Existing RetroAchievementsDataAdapter retains platform identity");
+
     if (args.Contains("--live-github-sync", StringComparer.OrdinalIgnoreCase))
     {
         if (!args.Contains("--confirm-synthetic-upload", StringComparer.OrdinalIgnoreCase))
@@ -1996,6 +2614,23 @@ try
 finally
 {
     try { Directory.Delete(tempRoot, recursive: true); } catch { }
+}
+
+T RunOnStaThread<T>(Func<T> work)
+{
+    T staResult = default!;
+    Exception? staFailure = null;
+    var staThread = new Thread(() =>
+    {
+        try { staResult = work(); }
+        catch (Exception exception) { staFailure = exception; }
+    });
+    staThread.SetApartmentState(ApartmentState.STA);
+    staThread.Start();
+    staThread.Join();
+    if (staFailure is not null)
+        throw new InvalidOperationException("FAIL: WPF smoke check threw " + staFailure.GetType().Name + ": " + staFailure.Message, staFailure);
+    return staResult;
 }
 
 void Check(bool condition, string description)

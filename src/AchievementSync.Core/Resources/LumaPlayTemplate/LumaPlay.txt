@@ -1,0 +1,27 @@
+***************************************************************
+* LumaPlay 2.2.6                                              *
+* by Steam006                                                 *
+***************************************************************
+
+LumaPlay Features:
+Play games without Uplay.
+DLC Patch (not all games)
+Achievements (Sound)
+Uplay Actions (Sound)
+
+Installation x86:
+1. Copy LumaPlay_x86.exe and the LumaPlayFiles folder to the game folder.
+2. Copy the original uplay_r1.dll to the LumaPlayFiles folder and rename it to UbiAPI.dll
+3. Change the exe name and other settings in LumaPlay.ini.
+4. Start the game through LumaPlay_x86.exe.
+
+Installation x64:
+1. Copy LumaPlay_x64.exe and the LumaPlayFiles folder to the game folder.
+2. Copy the original uplay_r164.dll to the LumaPlayFiles folder and rename it to UbiAPI.dll
+3. Change the exe name and other settings in LumaPlay.ini.
+4. Start the game through LumaPlay_x64.exe.
+
+Credits:
+0x0315: x86 CDKey function
+machine4578: Testing
+Christsnatcher: Testing

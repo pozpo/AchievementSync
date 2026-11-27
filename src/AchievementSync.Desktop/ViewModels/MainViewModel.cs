@@ -50,6 +50,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly GitHubReleaseUpdateService _releaseUpdateService = new();
     private readonly WindowsCredentialTokenStore _githubTokenStore = new();
     private readonly WindowsCredentialTokenStore _retroAchievementsKeyStore = new("AchievementSync/Platforms/RetroAchievementsApiKey");
+    private readonly WindowsCredentialTokenStore _xboxCredentialStore = new("AchievementSync/Platforms/XboxCredential");
+    private readonly WindowsCredentialTokenStore _epicCredentialStore = new("AchievementSync/Platforms/EpicCredential");
     private readonly GameplaySessionTracker _gameplayTracker;
     private readonly AchievementUnlockTracker _unlockTracker;
     private readonly IStartupRegistration _startupRegistration;
@@ -126,7 +128,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ("steam", "Steam"), ("xblen", "XBLessness"), ("xboxpc", "Xbox PC"),
         ("xbox360", "Xenia / Xbox 360"), ("gfwl", "GFWL"), ("rpcs3", "RPCS3 / PS3"),
         ("ps4", "shadPS4"), ("ps5", "Kyty PS5"), ("epic", "Epic Games Store"),
-        ("gog", "GOG Galaxy"), ("uplay", "Ubisoft Connect")
+        ("gog", "GOG Galaxy"), ("uplay", "Ubisoft Connect"),
+        ("uplaycache", "Ubisoft Connect Cache"), ("uplayrune", "Ubisoft RUNE Saves"),
+        ("ea", "EA Desktop Logs"), ("recomp", "Recomp Ports (PS3/PS4)"), ("ladxhd", "LADXHD Recomp")
     ];
 
     public MainViewModel() : this(null, null, readStoredCredential: true, enableDiagnostics: true)
@@ -172,12 +176,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Register platform data adapters for the dedicated Platforms page
         _platformScanService.Register(new SteamDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new XboxDataAdapter("xbox", "Xbox / Xbox PC (XBLessness)", includeGfwl: false));
+        _platformScanService.Register(new XboxPcDataAdapter(_platformSourceOptions, _viewerCatalogHttp));
         _platformScanService.Register(new GfwlDataAdapter());
         _platformScanService.Register(new Xbox360DataAdapter());
         _platformScanService.Register(new PlayStationDataAdapter());
         _platformScanService.Register(new GogDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new EpicDataAdapter(_platformSourceOptions, _viewerCatalogHttp));
         _platformScanService.Register(new UplayDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new EaDesktopDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new RecompDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new RetroAchievementsDataAdapter(_viewerCatalogHttp));
 
         PlatformStatuses = _platformScanService.Adapters.Select(adapter =>
@@ -218,6 +225,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             parameter => ScanPlatformAsync(parameter?.ToString() ?? string.Empty),
             _ => CanScanPlatform);
         ClearBulkSyncReportCommand = new RelayCommand(_ => ClearBulkSyncReport());
+        OpenMappingReviewCommand = new AsyncCommand(OpenMappingReviewAsync);
         OpenEnablerWizardCommand = new RelayCommand(_ => OpenEnablerWizard());
         OpenGameCommand = new RelayCommand(parameter =>
         {
@@ -309,6 +317,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public ICommand CheckForUpdatesCommand { get; }
     public ICommand InstallUpdateCommand { get; }
     public ICommand ClearBulkSyncReportCommand { get; }
+    public ICommand OpenMappingReviewCommand { get; }
+    public string XboxClientId
+    {
+        get => _settings.XboxClientId;
+        set
+        {
+            if (_settings.XboxClientId == value) return;
+            _settings.XboxClientId = value ?? string.Empty;
+            SaveSettings();
+            OnPropertyChanged(nameof(XboxClientId));
+            _platformSourceOptions = BuildPlatformSourceOptions();
+        }
+    }
+    public string EpicClientId
+    {
+        get => _settings.EpicClientId;
+        set
+        {
+            if (_settings.EpicClientId == value) return;
+            _settings.EpicClientId = value ?? string.Empty;
+            SaveSettings();
+            OnPropertyChanged(nameof(EpicClientId));
+            _platformSourceOptions = BuildPlatformSourceOptions();
+        }
+    }
     public ObservableCollection<string> BulkSyncResults { get; } = [];
     public ObservableCollection<string> BackupResults { get; } = [];
     public ObservableCollection<string> RestoreResults { get; } = [];
@@ -2567,10 +2600,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 case "epic": options.EpicRoot = expanded; break;
                 case "gog": options.GogRoot = expanded; break;
                 case "uplay": options.UplayRoot = expanded; break;
+                case "uplaycache": options.UplayCacheRoot = expanded; break;
+                case "uplayrune": options.UplayRuneRoot = expanded; break;
+                case "ea": options.EaRoot = expanded; break;
+                case "recomp": options.RecompRoot = expanded; break;
+                case "ladxhd": options.LadxhdRoot = expanded; break;
             }
         }
         options.RetroAchievementsUser = _settings.RetroAchievementsUser;
         options.RetroAchievementsApiKey = ReadPlatformCredential(_retroAchievementsKeyStore);
+
+        options.XboxEntraClientId = _settings.XboxClientId;
+        var xboxCred = XboxStoredCredential.Parse(ReadPlatformCredential(_xboxCredentialStore));
+        if (xboxCred is not null)
+        {
+            options.XboxXstsToken = xboxCred.XstsToken;
+            options.XboxUhs = xboxCred.Uhs;
+            options.XboxXuid = xboxCred.Xuid;
+        }
+
+        options.EpicClientId = _settings.EpicClientId;
+        var epicCred = EpicStoredCredential.Parse(ReadPlatformCredential(_epicCredentialStore));
+        if (epicCred is not null)
+        {
+            options.EpicAccessToken = epicCred.AccessToken;
+            options.EpicAccountId = epicCred.AccountId;
+        }
+
+        options.LumaPlayWatcherEnabled = _settings.LumaPlayWatcherEnabled;
         return options;
     }
 
@@ -2587,6 +2644,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         "epic" => options.EpicRoot ?? string.Empty,
         "gog" => options.GogRoot ?? string.Empty,
         "uplay" => options.UplayRoot ?? string.Empty,
+        "uplaycache" => options.UplayCacheRoot ?? string.Empty,
+        "uplayrune" => options.UplayRuneRoot ?? string.Empty,
+        "ea" => options.EaRoot ?? string.Empty,
+        "recomp" => options.RecompRoot ?? string.Empty,
+        "ladxhd" => options.LadxhdRoot ?? string.Empty,
         _ => string.Empty
     };
 
@@ -2601,11 +2663,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PlatformSourceRootsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public void SavePlatformCredentials(string retroAchievementsApiKey)
+    public void SavePlatformCredentials(string? retroAchievementsApiKey, string? xboxCredentialJson = null, string? epicCredentialJson = null)
     {
         try
         {
-            StorePlatformCredential(_retroAchievementsKeyStore, retroAchievementsApiKey);
+            if (!string.IsNullOrWhiteSpace(retroAchievementsApiKey))
+                StorePlatformCredential(_retroAchievementsKeyStore, retroAchievementsApiKey);
+            if (!string.IsNullOrWhiteSpace(xboxCredentialJson))
+                StorePlatformCredential(_xboxCredentialStore, xboxCredentialJson);
+            if (!string.IsNullOrWhiteSpace(epicCredentialJson))
+                StorePlatformCredential(_epicCredentialStore, epicCredentialJson);
+
             _platformSourceOptions = BuildPlatformSourceOptions();
             UpdatePlatformCredentialStatus();
         }
@@ -2621,6 +2689,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             _retroAchievementsKeyStore.Delete();
+            _xboxCredentialStore.Delete();
+            _epicCredentialStore.Delete();
             _platformSourceOptions = BuildPlatformSourceOptions();
             UpdatePlatformCredentialStatus();
         }
@@ -2629,6 +2699,93 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             PlatformCredentialStatus = "Credentials could not be cleared. Check Windows Credential Manager access and try again.";
             AppLog.Warning($"Platform API credentials could not be cleared: {exception.GetType().Name}.");
         }
+    }
+
+    private async Task OpenMappingReviewAsync()
+    {
+        var options = BuildPlatformSourceOptions();
+        var resolutions = new List<SteamAppIdResolution>();
+        var resolver = new SteamAppIdResolver(
+            SteamDbAppIdLookup.LookupAppIdAsync,
+            appId => _localCatalogCache.LoadCatalog(appId)?.Achievements);
+
+        foreach (var adapter in _platformScanService.Adapters)
+        {
+            try
+            {
+                if (!adapter.IsConfiguredFor(options)) continue;
+                var report = await adapter.CollectAsync(options).ConfigureAwait(false);
+                foreach (var game in report.Games)
+                {
+                    var resolution = await resolver.ResolveAsync(
+                        game,
+                        _settings.SteamAppIdOverrides,
+                        _settings.PlatformBlacklist).ConfigureAwait(false);
+                    resolutions.Add(resolution);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning($"Mapping review collection error ({adapter.Platform}): {ex.Message}");
+            }
+        }
+
+        foreach (var (key, targetAppId) in _settings.SteamAppIdOverrides)
+        {
+            var parts = key.Split(':', 2);
+            var plat = parts.Length > 1 ? parts[0] : "custom";
+            var srcId = parts.Length > 1 ? parts[1] : parts[0];
+            if (!resolutions.Any(r => string.Equals(r.Platform, plat, StringComparison.OrdinalIgnoreCase) && string.Equals(r.SourceGameId, srcId, StringComparison.OrdinalIgnoreCase)))
+            {
+                resolutions.Add(new SteamAppIdResolution(
+                    plat, srcId, srcId, targetAppId, SteamMappingConfidence.Override,
+                    "Saved manual override", true, _settings.PlatformBlacklist.Contains(key), [], 0));
+            }
+        }
+
+        await Application.Current!.Dispatcher.InvokeAsync(() =>
+        {
+            var vm = new MappingReviewViewModel(resolutions);
+            var dialog = new Views.MappingReviewDialog(vm)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            if (dialog.ShowDialog() == true)
+            {
+                var changed = false;
+                foreach (var item in vm.Items)
+                {
+                    var key = item.OverrideKey;
+                    if (!string.IsNullOrWhiteSpace(item.OverrideAppId))
+                    {
+                        if (!_settings.SteamAppIdOverrides.TryGetValue(key, out var cur) || !string.Equals(cur, item.OverrideAppId, StringComparison.Ordinal))
+                        {
+                            _settings.SteamAppIdOverrides[key] = item.OverrideAppId;
+                            changed = true;
+                        }
+                    }
+                    else if (_settings.SteamAppIdOverrides.Remove(key))
+                    {
+                        changed = true;
+                    }
+
+                    if (item.IsBlacklisted)
+                    {
+                        if (_settings.PlatformBlacklist.Add(key)) changed = true;
+                    }
+                    else
+                    {
+                        if (_settings.PlatformBlacklist.Remove(key)) changed = true;
+                    }
+                }
+
+                if (changed)
+                {
+                    SaveSettings();
+                    OnPropertyChanged(nameof(PlatformSourceOptions));
+                }
+            }
+        });
     }
 
     private void MigrateLegacyPlatformCredentials()
@@ -2682,7 +2839,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void UpdatePlatformCredentialStatus()
     {
         var ra = !string.IsNullOrWhiteSpace(ReadPlatformCredential(_retroAchievementsKeyStore));
-        PlatformCredentialStatus = $"RetroAchievements API key: {(ra ? "saved" : "not set")}. Stored in Windows Credential Manager.";
+        var xbox = XboxStoredCredential.Parse(ReadPlatformCredential(_xboxCredentialStore)) is not null;
+        var epic = EpicStoredCredential.Parse(ReadPlatformCredential(_epicCredentialStore)) is not null;
+        var parts = new List<string>();
+        parts.Add($"RetroAchievements: {(ra ? "saved" : "not set")}");
+        parts.Add($"Xbox PC: {(xbox ? "connected" : "not set")}");
+        parts.Add($"Epic Games: {(epic ? "connected" : "not set")}");
+        PlatformCredentialStatus = string.Join(" | ", parts) + ". Stored in Windows Credential Manager.";
+        OnPropertyChanged(nameof(PlatformCredentialStatus));
     }
 
     private void OpenEnablerWizard()

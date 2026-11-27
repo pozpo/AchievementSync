@@ -16,10 +16,30 @@ public sealed partial class Xbox360DataAdapter() : PlatformDataAdapter("xbox360"
     private const uint AchievementEarnedFlag = 0x20000;
     private static readonly Regex TitleIdPattern = new(@"\b[0-9A-F]{8}\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    public static readonly Xbox360RecompRule[] RecompRules =
+    [
+        new("Dante's Inferno", ["dantes_inferno.exe", "dantes_inferno_native.exe", "dantesinferno.exe"], "454108CF", ["user", "userdata", "saves"]),
+        new("LEGO Dimensions", ["legodimensions.exe"], "5752084D", ["user", "userdata", "saves"]),
+        new("Midnight Club: Los Angeles", ["midnightclubla.exe", "mcla.exe", "larecomp.exe"], "545407F8", ["user", "userdata", "saves"]),
+        new("Spider-Man: Edge of Time", ["SpiderManEOT.exe"], "415608B5", ["user", "userdata", "saves"]),
+        new("Blue Dragon (re:Blue)", ["reblue.exe"], "4D5307DF", ["profiles"]),
+        new("Gears of War 2 Hollow", ["gears2.exe", "hollow.exe"], "4D53082D", [Path.Combine("GearGame", "SaveData")]),
+        new("Unleashed Recompiled", ["UnleashedRecomp.exe"], "53450819", ["user", "userdata", "saves"]),
+        new("Castlevania: Symphony of the Night (Nocturne)", ["nocturnerecomp.exe"], "58410847", ["user", "userdata", "saves"]),
+        new("Silent Hill: Downpour", ["downpour.exe"], "4B4E0823", ["user"]),
+        new("Deadly Premonition", ["deadlyprem.exe", "deadlyprem_usa.exe"], "4D4A07DD", ["userdata"]),
+        new("Fable II (himdo)", ["fable_2.exe"], "4D5307F1", ["saves"]),
+        new("Naughty Bear (ReStuff)", ["restuff.exe"], "464F07D2", ["Documents"]),
+        new("Condemned 2: Bloodshot", ["condemned2recomp.exe"], "534507EF", ["UserData"]),
+        new("Project Gotham Racing 4", ["pgr4_recomp.exe", "pgr4_recompiled.exe"], "4D5307F9", ["Documents"]),
+        new("Crackdown 2", ["crackdown2.exe"], "4D5308BC", ["user", "userdata", "saves"]),
+        new("Banjo-Kazooie: Nuts & Bolts (reNut)", ["renut.exe"], "4D5307ED", ["renut.cfg"])
+    ];
+
     public override bool IsConfigured => IsConfiguredFor(PlatformSourceOptions.CreateDefault());
 
     public override bool IsConfiguredFor(PlatformSourceOptions options) =>
-        new[] { options.Xbox360Root, options.XeniaRoot }
+        new[] { options.Xbox360Root, options.XeniaRoot, options.RecompRoot }
             .Any(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path));
 
     public override string? ConfigurationHint =>
@@ -27,7 +47,7 @@ public sealed partial class Xbox360DataAdapter() : PlatformDataAdapter("xbox360"
 
     public override Task<PlatformCollectResult> CollectAsync(PlatformSourceOptions options, CancellationToken cancellationToken = default)
     {
-        var roots = new[] { options.Xbox360Root, options.XeniaRoot }
+        var roots = new[] { options.Xbox360Root, options.XeniaRoot, options.RecompRoot }
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(path => path!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -40,6 +60,9 @@ public sealed partial class Xbox360DataAdapter() : PlatformDataAdapter("xbox360"
 
         foreach (var root in roots)
         {
+            // Apply per-game Xbox 360 recomp rules (executable -> TitleID -> game-specific save roots & renut.cfg).
+            CollectRecompRules(root, games, messages, cancellationToken);
+
             foreach (var file in EnumerateFiles(root, "*.gpd", 8))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -48,7 +71,7 @@ public sealed partial class Xbox360DataAdapter() : PlatformDataAdapter("xbox360"
                     var achievements = ParseGpd(file);
                     if (achievements.Count == 0) continue;
                     var titleId = TitleIdFromPath(file) ?? "unknown";
-                    Add(titleId, file, achievements);
+                    Add(titleId, null, file, achievements);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -73,7 +96,7 @@ public sealed partial class Xbox360DataAdapter() : PlatformDataAdapter("xbox360"
                         _ => ParseTomlUnlocked(file)
                     };
                     if (achievements.Count == 0) continue;
-                    Add(TitleIdFromPath(file) ?? "unknown", file, achievements);
+                    Add(TitleIdFromPath(file) ?? "unknown", null, file, achievements);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
                 {
@@ -84,12 +107,119 @@ public sealed partial class Xbox360DataAdapter() : PlatformDataAdapter("xbox360"
 
         return Task.FromResult(new PlatformCollectResult(Platform, games.Values.ToList(), messages));
 
-        void Add(string gameId, string source, IReadOnlyList<PlatformAchievement> achievements)
+        void Add(string gameId, string? title, string source, IReadOnlyList<PlatformAchievement> achievements)
         {
             if (!games.TryGetValue(gameId, out var existing) || achievements.Count > existing.Achievements.Count)
-                games[gameId] = new PlatformGameSnapshot(Platform, gameId, null, source, achievements);
+                games[gameId] = new PlatformGameSnapshot(Platform, gameId, title ?? existing?.Title, source, achievements);
         }
     }
+
+    private static void CollectRecompRules(
+        string root,
+        SortedDictionary<string, PlatformGameSnapshot> games,
+        List<string> messages,
+        CancellationToken cancellationToken)
+    {
+        var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+        foreach (var rule in RecompRules)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string? detectedExeDir = null;
+            foreach (var exeName in rule.Executables)
+            {
+                var found = EnumerateFiles(root, exeName, 4).FirstOrDefault();
+                if (found is not null)
+                {
+                    detectedExeDir = Path.GetDirectoryName(found);
+                    break;
+                }
+            }
+
+            // Special rule for Gears of War 2 Hollow when folder has GearGame\SaveData without specific exe name
+            if (detectedExeDir is null && rule.TitleId == "4D53082D")
+            {
+                var gearSave = Path.Combine(root, "GearGame", "SaveData");
+                if (Directory.Exists(gearSave)) detectedExeDir = root;
+            }
+
+            if (detectedExeDir is null) continue;
+
+            var searchDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { detectedExeDir };
+            foreach (var hint in rule.SaveSubPaths)
+            {
+                if (hint.Equals("Documents", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var exeName in rule.Executables)
+                    {
+                        var appName = Path.GetFileNameWithoutExtension(exeName);
+                        searchDirs.Add(Path.Combine(docs, appName));
+                    }
+                    searchDirs.Add(Path.Combine(docs, rule.GameName));
+                }
+                else if (hint.Equals("renut.cfg", StringComparison.OrdinalIgnoreCase))
+                {
+                    var cfgPath = Path.Combine(detectedExeDir, "renut.cfg");
+                    if (File.Exists(cfgPath))
+                    {
+                        foreach (var line in SafeReadLines(cfgPath))
+                        {
+                            var eq = line.IndexOf('=');
+                            if (eq <= 0) continue;
+                            var val = line[(eq + 1)..].Trim().Trim('"');
+                            if (Directory.Exists(val)) searchDirs.Add(val);
+                        }
+                    }
+                }
+                else
+                {
+                    searchDirs.Add(Path.Combine(detectedExeDir, hint));
+                    searchDirs.Add(Path.Combine(local, Path.GetFileNameWithoutExtension(rule.Executables[0]), hint));
+                    searchDirs.Add(Path.Combine(roaming, Path.GetFileNameWithoutExtension(rule.Executables[0]), hint));
+                }
+            }
+
+            foreach (var dir in searchDirs.Where(Directory.Exists))
+            {
+                foreach (var file in EnumerateFiles(dir, "*.*", 4))
+                {
+                    var ext = Path.GetExtension(file).ToLowerInvariant();
+                    if (ext is not (".gpd" or ".toml" or ".tsv" or ".json")) continue;
+                    if (ext != ".gpd" && !IsRecompProgressFile(file) && !Path.GetFileName(file).Contains("achiev", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    try
+                    {
+                        var achievements = ext switch
+                        {
+                            ".gpd" => ParseGpd(file),
+                            ".tsv" => ParseTsv(file),
+                            ".json" => ParseRecompJson(file),
+                            _ => ParseTomlUnlocked(file)
+                        };
+                        if (achievements.Count == 0) continue;
+                        var key = TitleIdFromPath(file) ?? rule.TitleId;
+                        if (!games.TryGetValue(key, out var existing) || achievements.Count > existing.Achievements.Count)
+                            games[key] = new PlatformGameSnapshot("xbox360", key, rule.GameName, file, achievements, "xbox360-recomp");
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                    {
+                        messages.Add($"Xbox 360 Recomp ({rule.GameName}): skipped {Path.GetFileName(file)}.");
+                    }
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<string> SafeReadLines(string path)
+    {
+        try { return File.ReadAllLines(path); }
+        catch { return []; }
+    }
+
+    public sealed record Xbox360RecompRule(string GameName, string[] Executables, string TitleId, string[] SaveSubPaths);
 
     private static bool IsRecompProgressFile(string file)
     {

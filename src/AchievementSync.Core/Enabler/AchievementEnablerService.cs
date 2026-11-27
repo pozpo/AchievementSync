@@ -15,6 +15,7 @@ public enum EnablerTarget
     SteamColdLoaderWithRegularEmulator,
     UplayR2,
     UplayR1,
+    UplayLumaPlay,
     EpicEmulator,
     GogUniverseLan,
     EaOrigin
@@ -108,7 +109,12 @@ public sealed class AchievementEnablerService
         bool Has(string name) => files.Contains(name, StringComparer.OrdinalIgnoreCase);
 
         var target = EnablerTarget.SteamEmulator;
-        if (Has("upc_r2_loader.dll") || Has("upc_r2_loader64.dll") || Has("uplay_r2_loader.dll") || Has("uplay_r2_loader64.dll"))
+        if (Has("LumaPlay_x64.exe") || Has("LumaPlay_x86.exe") || Directory.Exists(Path.Combine(directory, "LumaPlayFiles")))
+        {
+            target = EnablerTarget.UplayLumaPlay;
+            evidence.Add("LumaPlay Ubisoft emulator marker found.");
+        }
+        else if (Has("upc_r2_loader.dll") || Has("upc_r2_loader64.dll") || Has("uplay_r2_loader.dll") || Has("uplay_r2_loader64.dll"))
         {
             target = EnablerTarget.UplayR2;
             evidence.Add("Ubisoft UPC R2 loader found.");
@@ -310,6 +316,8 @@ public sealed class AchievementEnablerService
                || lower.StartsWith("universallanserver", StringComparison.Ordinal)
                || lower == "origin_unwrapper.exe"
                || lower == "generate_emu_config.exe"
+               || lower == "lumaplay_x64.exe"
+               || lower == "lumaplay_x86.exe"
                || lower == "ueprereqsetup_x64.exe"
                || lower == "ue4prereqsetup_x64.exe";
     }
@@ -419,6 +427,9 @@ public sealed class AchievementEnablerService
             case EnablerTarget.UplayR1:
             case EnablerTarget.UplayR2:
                 BuildUplayPlan(detection, chosen, gameId, items, notes, warnings, blockers);
+                break;
+            case EnablerTarget.UplayLumaPlay:
+                BuildLumaPlayPlan(detection, gameId, items, notes, warnings, blockers);
                 break;
             case EnablerTarget.EpicEmulator:
                 BuildEpicPlan(detection, gameId, items, notes, warnings, blockers);
@@ -1191,6 +1202,108 @@ public sealed class AchievementEnablerService
         items.Add(TextItem(Path.Combine(destination, iniName), iniText, $"Matching Ubisoft INI ({iniName}) with achievements enabled and save/schema paths set"));
 
         notes.Add($"{variantName} emulator configured in '{destination}'. Save data and earned achievements will be stored in '{savePath}'.");
+    }
+
+    private void BuildLumaPlayPlan(EnablerDetection detection, string? gameId,
+        List<EnablerPlanItem> items, List<string> notes, List<string> warnings, List<string> blockers)
+    {
+        string? lumaRuntime = null;
+        try
+        {
+            lumaRuntime = EmbeddedLumaPlayRuntime.EnsureReady();
+        }
+        catch (Exception ex)
+        {
+            blockers.Add($"Failed to extract bundled LumaPlay 2.2.6 runtime: {ex.Message}");
+            return;
+        }
+
+        var executable = detection.Executable ?? FindCandidateExecutables(detection.GameDirectory, EnablerTarget.UplayLumaPlay).FirstOrDefault();
+        var destination = executable is not null ? Path.GetDirectoryName(executable)! : detection.GameDirectory;
+        var is64Bit = ReadExecutableIs64Bit(executable)
+                      ?? File.Exists(Path.Combine(destination, "uplay_r1_loader64.dll"))
+                      || !File.Exists(Path.Combine(destination, "uplay_r1_loader.dll"));
+
+        var exeName = is64Bit ? "LumaPlay_x64.exe" : "LumaPlay_x86.exe";
+        var dllName = is64Bit ? "LumaPlay_x64.dll" : "LumaPlay_x86.dll";
+        var lumaFilesDest = Path.Combine(destination, "LumaPlayFiles");
+
+        items.Add(new EnablerPlanItem("lumaplay-wrapper", Path.Combine(destination, exeName), Path.Combine(lumaRuntime, exeName), null,
+            $"LumaPlay 2.2.6 launcher ({exeName})"));
+        items.Add(CopyItem(Path.Combine(lumaFilesDest, dllName), Path.Combine(lumaRuntime, "LumaPlayFiles", dllName),
+            $"LumaPlay 2.2.6 runtime library ({dllName})"));
+        items.Add(CopyItem(Path.Combine(lumaFilesDest, "LumaPlaySounds", "AchievementUnlocked.wav"),
+            Path.Combine(lumaRuntime, "LumaPlayFiles", "LumaPlaySounds", "AchievementUnlocked.wav"),
+            "LumaPlay achievement unlock sound"));
+
+        // If original Ubisoft uplay_r164.dll / uplay_r1.dll exists in Ubisoft Game Launcher, copy it to LumaPlayFiles\UbiAPI.dll
+        var ubiLauncherDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Ubisoft", "Ubisoft Game Launcher");
+        var originalUbiDll = is64Bit ? Path.Combine(ubiLauncherDir, "uplay_r164.dll") : Path.Combine(ubiLauncherDir, "uplay_r1.dll");
+        if (File.Exists(originalUbiDll))
+        {
+            items.Add(CopyItem(Path.Combine(lumaFilesDest, "UbiAPI.dll"), originalUbiDll,
+                "Original Ubisoft Uplay API library copied as LumaPlayFiles\\UbiAPI.dll"));
+        }
+        else
+        {
+            warnings.Add($"LumaPlay requires the original Ubisoft {(is64Bit ? "uplay_r164.dll" : "uplay_r1.dll")} copied into '{lumaFilesDest}' and renamed to UbiAPI.dll.");
+        }
+
+        // Build LumaPlay.ini with GameExe and [Achievements]
+        var iniSourcePath = Path.Combine(lumaRuntime, "LumaPlayFiles", "LumaPlay.ini");
+        var iniText = File.Exists(iniSourcePath) ? File.ReadAllText(iniSourcePath) : string.Empty;
+        if (executable is not null)
+            iniText = SetIniValue(iniText, "GameExe", Path.GetFileName(executable));
+
+        var uplayGameId = ReadUplayAppId(destination) ?? ReadUplayAppId(detection.GameDirectory) ?? gameId ?? "0";
+        var achLines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(gameId))
+        {
+            var achFile = FindSteamAchievementsFile(detection.GameDirectory, gameId);
+            if (achFile is not null && File.Exists(achFile))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllBytes(achFile));
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        int idx = 1;
+                        foreach (var el in doc.RootElement.EnumerateArray())
+                        {
+                            var name = ReadLocalizedText(el, "displayName");
+                            var desc = ReadLocalizedText(el, "description");
+                            if (string.IsNullOrWhiteSpace(name) && el.TryGetProperty("name", out var nEl))
+                                name = nEl.GetString() ?? $"Achievement {idx}";
+                            var entryText = string.IsNullOrWhiteSpace(desc) ? name : $"{name} - {desc}";
+                            achLines.Add($"Achievement_{idx} = {entryText}");
+                            idx++;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        var achSection = new StringBuilder();
+        achSection.AppendLine("[Achievements]");
+        achSection.AppendLine("GenerateAchievementReportOnExit = 1");
+        achSection.AppendLine($"NumberOfAchievements = {achLines.Count}");
+        achSection.AppendLine($"UplayGameID = {uplayGameId}");
+        achSection.AppendLine();
+        foreach (var line in achLines) achSection.AppendLine(line);
+
+        if (Regex.IsMatch(iniText, @"(?ms)^\[Achievements\].*?(?=^\[|\z)"))
+        {
+            iniText = Regex.Replace(iniText, @"(?ms)^\[Achievements\].*?(?=^\[|\z)", achSection.ToString().TrimEnd() + "\r\n\r\n");
+        }
+        else
+        {
+            iniText = iniText.TrimEnd() + "\r\n\r\n" + achSection.ToString();
+        }
+
+        items.Add(TextItem(Path.Combine(lumaFilesDest, "LumaPlay.ini"), iniText,
+            "LumaPlay configuration (LumaPlayFiles/LumaPlay.ini) with GameExe and [Achievements]"));
+        notes.Add($"LumaPlay 2.2.6 ({(is64Bit ? "x64" : "x86")}) configured in '{destination}'. Launch the game via '{exeName}'. Enable the LumaPlay Watcher in Platforms/Settings to monitor HKCU\\SOFTWARE\\LumaPlay.");
     }
 
     public async Task<EnablerGeneratorRefreshResult> RefreshEpicMetadataAsync(
@@ -2618,6 +2731,7 @@ public sealed class AchievementEnablerService
             EmbeddedColdClientRuntime.RootPath,
             EmbeddedUplayR1Runtime.RootPath,
             EmbeddedUplayR2Runtime.RootPath,
+            EmbeddedLumaPlayRuntime.RootPath,
             EmbeddedEpicRuntime.RootPath,
             EmbeddedUniverseLanRuntime.RootPath,
             EmbeddedEaOriginRuntime.RootPath,
@@ -2660,7 +2774,8 @@ public sealed class AchievementEnablerService
             EnsureNoChildReparsePoint(destRoot, item.Destination);
             return;
         }
-        if (!item.Kind.Equals("copy", StringComparison.OrdinalIgnoreCase)) return;
+        if (!item.Kind.Equals("copy", StringComparison.OrdinalIgnoreCase)
+            && !item.Kind.Equals("lumaplay-wrapper", StringComparison.OrdinalIgnoreCase)) return;
         if (item.Source is null) throw new InvalidOperationException("The plan contains a copy without a source file.");
         var sourceRoot = allowedSourceRoots.FirstOrDefault(root => IsPathWithin(root, item.Source));
         if (sourceRoot is null)

@@ -32,6 +32,13 @@ public sealed class AppSettings
 
     // Platform source folders (environment-tokenised paths are accepted).
     public Dictionary<string, string> PlatformSourceRoots { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // User-configured Steam AppID overrides and platform blacklist
+    public Dictionary<string, string> SteamAppIdOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> PlatformBlacklist { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // User-configured client IDs for official Entra / Epic sign-in
+    public string XboxClientId { get; set; } = string.Empty;
+    public string EpicClientId { get; set; } = string.Empty;
+    public bool LumaPlayWatcherEnabled { get; set; } = true;
     // Platform login secrets are held in Windows Credential Manager. Keep only the RA account name here.
     public string RetroAchievementsUser { get; set; } = string.Empty;
     [JsonPropertyName("RetroAchievementsApiKey")]

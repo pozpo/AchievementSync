@@ -72,29 +72,41 @@ public sealed class GitHubAchievementSyncClient
         var baseTree = GitHubDeviceFlowClient.RequiredString(commit.RootElement.GetProperty("tree"), "sha");
 
         var exportedFiles = localFiles.ToArray();
-        if (exportedFiles.GroupBy(file => file.AppId, StringComparer.Ordinal).Any(group => group.Count() > 1))
-            throw new InvalidDataException("A sync preview contained duplicate files for the same AppID.");
+        if (exportedFiles.GroupBy(file => file.RelativePath, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+            throw new InvalidDataException("A sync preview contained duplicate files for the same path.");
 
         var changes = new List<GitHubSyncChange>();
-        foreach (var file in exportedFiles.OrderBy(file => file.AppId, StringComparer.Ordinal))
+        foreach (var file in exportedFiles.OrderBy(file => file.RelativePath, StringComparer.Ordinal))
         {
-            var expectedPath = $"AppID/{file.AppId}/achievements.json";
-            if (!string.Equals(file.RelativePath, expectedPath, StringComparison.Ordinal)
-                || string.IsNullOrEmpty(file.AppId)
-                || !file.AppId.All(char.IsAsciiDigit))
-                throw new InvalidDataException("A sync preview contained a path outside AppID/<numeric id>/achievements.json.");
+            ValidateExportFilePath(file.RelativePath, file.AppId);
 
-            var remoteContent = await ReadAchievementFileAsync(token, target, baseCommit, file.AppId, cancellationToken);
-            var merged = AchievementJsonMerge.Merge(file.Json, remoteContent);
-            var isChanged = remoteContent is null || !AchievementJsonMerge.SemanticallyEqual(remoteContent, merged);
-            if (!isChanged) continue;
-            changes.Add(new GitHubSyncChange(
-                file.RelativePath,
-                file.AppId,
-                remoteContent,
-                merged,
-                CountAchievements(merged),
-                AchievementJsonMerge.CountNewUnlocks(remoteContent, merged)));
+            if (file.RelativePath.EndsWith("achievements.json", StringComparison.Ordinal))
+            {
+                var remoteContent = await ReadAchievementFileAsync(token, target, baseCommit, file.AppId, cancellationToken);
+                var merged = AchievementJsonMerge.Merge(file.Json, remoteContent);
+                var isChanged = remoteContent is null || !AchievementJsonMerge.SemanticallyEqual(remoteContent, merged);
+                if (!isChanged) continue;
+                changes.Add(new GitHubSyncChange(
+                    file.RelativePath,
+                    file.AppId,
+                    remoteContent,
+                    merged,
+                    CountAchievements(merged),
+                    AchievementJsonMerge.CountNewUnlocks(remoteContent, merged)));
+            }
+            else
+            {
+                var remoteContent = await ReadRemoteTextAsync(token, target, baseCommit, file.RelativePath, cancellationToken);
+                var isChanged = remoteContent is null || !string.Equals(remoteContent, file.Json, StringComparison.Ordinal);
+                if (!isChanged) continue;
+                changes.Add(new GitHubSyncChange(
+                    file.RelativePath,
+                    file.AppId,
+                    remoteContent,
+                    file.Json,
+                    0,
+                    0));
+            }
         }
 
         return new GitHubSyncPreview(target, baseCommit, baseTree, changes);
@@ -196,26 +208,41 @@ public sealed class GitHubAchievementSyncClient
         {
             try
             {
-                var expectedPath = $"AppID/{file.AppId}/achievements.json";
-                if (!string.Equals(file.RelativePath, expectedPath, StringComparison.Ordinal)
-                    || string.IsNullOrEmpty(file.AppId)
-                    || !file.AppId.All(char.IsAsciiDigit))
-                    throw new InvalidDataException("A sync item contained a path outside AppID/<numeric id>/achievements.json.");
+                ValidateExportFilePath(file.RelativePath, file.AppId);
 
-                var remoteContent = await ReadAchievementFileAsync(token, target, baseCommit, file.AppId, cancellationToken).ConfigureAwait(false);
-                var merged = AchievementJsonMerge.Merge(file.Json, remoteContent);
-                var isChanged = remoteContent is null || !AchievementJsonMerge.SemanticallyEqual(remoteContent, merged);
-                if (!isChanged)
+                if (file.RelativePath.EndsWith("achievements.json", StringComparison.Ordinal))
                 {
-                    achievementFilesUnchanged++;
-                    entries.Add(new BulkSyncEntry(file.AppId, "unchanged", "achievements.json is up to date"));
-                    continue;
-                }
+                    var remoteContent = await ReadAchievementFileAsync(token, target, baseCommit, file.AppId, cancellationToken).ConfigureAwait(false);
+                    var merged = AchievementJsonMerge.Merge(file.Json, remoteContent);
+                    var isChanged = remoteContent is null || !AchievementJsonMerge.SemanticallyEqual(remoteContent, merged);
+                    if (!isChanged)
+                    {
+                        achievementFilesUnchanged++;
+                        entries.Add(new BulkSyncEntry(file.AppId, "unchanged", "achievements.json is up to date"));
+                        continue;
+                    }
 
-                var sha = await CreateBlobAsync(token, target, merged, encoding: "utf-8", cancellationToken).ConfigureAwait(false);
-                treeEntries.Add(new { path = file.RelativePath, mode = "100644", type = "blob", sha });
-                achievementFilesPushed++;
-                entries.Add(new BulkSyncEntry(file.AppId, "pushed", $"achievements.json committed ({AchievementJsonMerge.CountNewUnlocks(remoteContent, merged):N0} new unlock(s) merged with remote)"));
+                    var sha = await CreateBlobAsync(token, target, merged, encoding: "utf-8", cancellationToken).ConfigureAwait(false);
+                    treeEntries.Add(new { path = file.RelativePath, mode = "100644", type = "blob", sha });
+                    achievementFilesPushed++;
+                    entries.Add(new BulkSyncEntry(file.AppId, "pushed", $"achievements.json committed ({AchievementJsonMerge.CountNewUnlocks(remoteContent, merged):N0} new unlock(s) merged with remote)"));
+                }
+                else
+                {
+                    var remoteContent = await ReadRemoteTextAsync(token, target, baseCommit, file.RelativePath, cancellationToken).ConfigureAwait(false);
+                    var isChanged = remoteContent is null || !string.Equals(remoteContent, file.Json, StringComparison.Ordinal);
+                    if (!isChanged)
+                    {
+                        achievementFilesUnchanged++;
+                        entries.Add(new BulkSyncEntry(file.AppId, "unchanged", $"{Path.GetFileName(file.RelativePath)} is up to date"));
+                        continue;
+                    }
+
+                    var sha = await CreateBlobAsync(token, target, file.Json, encoding: "utf-8", cancellationToken).ConfigureAwait(false);
+                    treeEntries.Add(new { path = file.RelativePath, mode = "100644", type = "blob", sha });
+                    achievementFilesPushed++;
+                    entries.Add(new BulkSyncEntry(file.AppId, "pushed", $"{Path.GetFileName(file.RelativePath)} committed"));
+                }
             }
             catch (Exception exception) when (exception is GitHubApiException or InvalidDataException or IOException or ArgumentException)
             {
@@ -685,12 +712,35 @@ public sealed class GitHubAchievementSyncClient
         return document.RootElement.EnumerateObject().Count();
     }
 
+    public static void ValidateExportFilePath(string relativePath, string appId)
+    {
+        if (string.IsNullOrEmpty(appId) || !appId.All(char.IsAsciiDigit))
+            throw new InvalidDataException("A sync preview contained a path outside AppID/<numeric id>/achievements.json.");
+
+        var prefix = $"AppID/{appId}/";
+        if (!relativePath.StartsWith(prefix, StringComparison.Ordinal) || relativePath.Contains("..", StringComparison.Ordinal))
+            throw new InvalidDataException("A sync preview contained a path outside AppID/<numeric id>/achievements.json.");
+
+        var filename = relativePath[prefix.Length..];
+        if (string.Equals(filename, "achievements.json", StringComparison.Ordinal))
+            return;
+        if (string.Equals(filename, "blacklist", StringComparison.OrdinalIgnoreCase))
+            return;
+        if (filename.EndsWith(".platform", StringComparison.OrdinalIgnoreCase)
+            && filename.Length > ".platform".Length
+            && filename[..^".platform".Length].All(c => char.IsLetterOrDigit(c) || c is '-' or '_'))
+            return;
+
+        throw new InvalidDataException($"A sync preview contained an unexpected file name: {filename}");
+    }
+
     private static void ValidateChange(GitHubSyncChange change)
     {
-        if (string.IsNullOrEmpty(change.AppId) || !change.AppId.All(char.IsAsciiDigit)
-            || !string.Equals(change.RelativePath, $"AppID/{change.AppId}/achievements.json", StringComparison.Ordinal))
-            throw new InvalidDataException("A sync change contained a path outside the AppID achievement data directory.");
-        _ = AchievementJsonMerge.Merge(change.ProposedJson, change.ExistingJson);
+        ValidateExportFilePath(change.RelativePath, change.AppId);
+        if (change.RelativePath.EndsWith("achievements.json", StringComparison.Ordinal))
+        {
+            _ = AchievementJsonMerge.Merge(change.ProposedJson, change.ExistingJson);
+        }
     }
 
     private static string RefPath(GitHubSyncTarget target) =>

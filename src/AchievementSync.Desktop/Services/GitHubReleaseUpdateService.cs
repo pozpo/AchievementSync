@@ -43,7 +43,7 @@ public sealed class GitHubReleaseUpdateService
         {
             Timeout = TimeSpan.FromMinutes(10)
         };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("AchievementSync-Update/1.2.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("AchievementSync-Update/1.3.0");
         return client;
     }
 

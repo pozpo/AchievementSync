@@ -13,14 +13,16 @@ public sealed class PlatformIconConverter : IValueConverter
         return platform.ToLowerInvariant() switch
         {
             "steam" => "⛭",
-            "xbox" => "✘",
-            "playstation" => "⧆",
-            "xbox360" => "⬢",
+            "xbox" or "xboxpc" => "✘",
+            "playstation" or "ps4" or "ps5" or "rpcs3" => "⧆",
+            "xbox360" or "xenia" => "⬢",
             "gfwl" => "⟲",
             "epic" => "⬡",
             "gog" => "◆",
             "uplay" => "⬟",
-            "retroachievements" => "⬠",
+            "ea" => "▲",
+            "recomp" => "⚙",
+            "retroachievements" or "ra" => "⬠",
             _ => "◇"
         };
     }

@@ -69,7 +69,7 @@ public partial class MainWindow : Window
         _viewModel.GameRequested += (_, game) =>
         {
             AppLog.Action($"Opened achievement details for AppID {game.AppId} ({game.Title}).");
-            var details = new GameDetailsWindow(game) { Owner = this };
+            var details = new GameDetailsWindow(game, () => _viewModel.RefreshGameMetadataAsync(game)) { Owner = this };
             details.ManualNameSubmitted += title => _viewModel.SetManualGameName(game, title);
             details.ExecutableAssociationRequested += requestedGame => AddGameExecutables(requestedGame);
             details.ShowDialog();

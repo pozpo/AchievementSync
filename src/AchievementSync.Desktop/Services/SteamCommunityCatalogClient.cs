@@ -49,7 +49,8 @@ public sealed class SteamCommunityCatalogClient
         var cacheUsable = IsUsableCommunityCache(cached, expectedTitle);
         if (IsFreshCommunityCache(cached, expectedTitle) && now - cached!.CommunityFetchedAtUtc!.Value < CacheLifetime)
             return ToResult(cached);
-        if (IsFailureCoolingDown(appId, now)) return cacheUsable ? ToResult(cached!) : null;
+        if (IsFailureCoolingDown(appId, now) && IsFreshCommunityCache(cached, expectedTitle))
+            return ToResult(cached!);
 
         await RequestSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -60,7 +61,8 @@ public sealed class SteamCommunityCatalogClient
             now = DateTimeOffset.UtcNow;
             if (IsFreshCommunityCache(cached, expectedTitle) && now - cached!.CommunityFetchedAtUtc!.Value < CacheLifetime)
                 return ToResult(cached);
-            if (IsFailureCoolingDown(appId, now)) return cacheUsable ? ToResult(cached!) : null;
+            if (IsFailureCoolingDown(appId, now) && IsFreshCommunityCache(cached, expectedTitle))
+                return ToResult(cached!);
 
             var page = await FetchPageAsync($"https://steamcommunity.com/achievements/{appId}/?l=english", cancellationToken)
                 .ConfigureAwait(false);
@@ -121,7 +123,7 @@ public sealed class SteamCommunityCatalogClient
         IsUsableCommunityCache(cached, expectedTitle)
         && cached!.Achievements.All(achievement =>
             (achievement.IsHidden || !string.IsNullOrWhiteSpace(achievement.Description))
-            && AchievementIdentity.IsMetadataImageUri(achievement.IconUri));
+            && LocalAchievementCatalogCache.IsValidMetadataImageUri(achievement.IconUri));
 
     private static bool IsFailureCoolingDown(string appId, DateTimeOffset now)
     {
@@ -233,13 +235,15 @@ public sealed class SteamCommunityCatalogClient
         // Steam's current Community page embeds the full achievement schema in its server-rendered data.
         // The visible <img> tags expose only the locked icon and omit the real API identifier.
         var decoded = html.Replace("\\\"", "\"", StringComparison.Ordinal);
-        var match = Regex.Match(decoded, "\\\"achievements\\\"\\s*:\\s*\\[(?<items>.*?)\\]",
-            RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        var match = Regex.Match(decoded, "\\\"achievements\\\"\\s*:\\s*\\[",
+            RegexOptions.CultureInvariant);
         if (!match.Success) return [];
+        var arrayStart = decoded.IndexOf('[', match.Index + match.Length - 1);
+        if (arrayStart < 0 || !TryFindJsonArrayEnd(decoded, arrayStart, out var arrayEnd)) return [];
 
         try
         {
-            using var document = JsonDocument.Parse("[" + match.Groups["items"].Value + "]");
+            using var document = JsonDocument.Parse(decoded[arrayStart..(arrayEnd + 1)]);
             var achievements = new List<AchievementRecord>();
             foreach (var item in document.RootElement.EnumerateArray())
             {
@@ -271,15 +275,47 @@ public sealed class SteamCommunityCatalogClient
         }
     }
 
+    private static bool TryFindJsonArrayEnd(string json, int arrayStart, out int arrayEnd)
+    {
+        arrayEnd = -1;
+        if (arrayStart < 0 || arrayStart >= json.Length || json[arrayStart] != '[') return false;
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var index = arrayStart; index < json.Length; index++)
+        {
+            var character = json[index];
+            if (inString)
+            {
+                if (escaped) escaped = false;
+                else if (character == '\\') escaped = true;
+                else if (character == '"') inString = false;
+                continue;
+            }
+
+            if (character == '"') inString = true;
+            else if (character == '[') depth++;
+            else if (character == ']' && --depth == 0)
+            {
+                arrayEnd = index;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static Uri? BuildCommunityIconUri(string appId, string? image)
     {
         if (string.IsNullOrWhiteSpace(image)) return null;
         var candidate = image.StartsWith("//", StringComparison.Ordinal)
             ? "https:" + image
-            : Uri.TryCreate(image, UriKind.Absolute, out _)
-                ? image
-                : image.StartsWith("/", StringComparison.Ordinal)
-                    ? "https://shared.fastly.steamstatic.com" + image
+            : image.StartsWith("/", StringComparison.Ordinal)
+                ? "https://shared.fastly.steamstatic.com" + image
+                : Uri.TryCreate(image, UriKind.Absolute, out var absolute)
+                    && absolute.Scheme is "http" or "https"
+                    ? image
                     : $"https://shared.fastly.steamstatic.com/community_assets/images/apps/{appId}/{Path.GetFileName(image)}";
         return TryGetCommunityIconUri(appId, candidate, out var uri) ? uri : null;
     }

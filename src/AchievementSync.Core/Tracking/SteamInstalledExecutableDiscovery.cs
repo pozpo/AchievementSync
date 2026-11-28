@@ -72,6 +72,38 @@ public static class SteamInstalledExecutableDiscovery
         return result;
     }
 
+    /// <summary>Returns AppID-to-title mappings from installed Steam manifests, including games with no discovered executable.</summary>
+    public static IReadOnlyDictionary<string, string> DiscoverInstalledGameTitles(string? configuredSteamRoot = null)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var steamApps in FindSteamAppsDirectories(configuredSteamRoot))
+        {
+            string[] manifests;
+            try { manifests = Directory.GetFiles(steamApps, "appmanifest_*.acf", SearchOption.TopDirectoryOnly); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or System.Security.SecurityException) { continue; }
+
+            foreach (var manifestPath in manifests)
+            {
+                var match = Regex.Match(Path.GetFileName(manifestPath), @"^appmanifest_(?<id>\d+)\.acf$",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (!match.Success) continue;
+                var appId = match.Groups["id"].Value;
+                try
+                {
+                    var text = File.ReadAllText(manifestPath);
+                    var name = ReadManifestValue(text, "name");
+                    if (!string.IsNullOrWhiteSpace(name) && !result.ContainsKey(appId))
+                        result[appId] = name.Trim();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                   or System.Security.SecurityException) { }
+            }
+        }
+
+        return result;
+    }
+
     private static IReadOnlyList<string> FindSteamAppsDirectories(string? configuredSteamRoot)
     {
         var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

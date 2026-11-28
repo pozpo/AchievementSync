@@ -2,6 +2,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using AchievementSync.Core.Metadata;
 using AchievementSync.Core.Platforms;
 
 namespace AchievementSync.Core.Synchronization;
@@ -21,12 +22,19 @@ public static class SaveFileDiscoverer
 
     private static readonly HashSet<string> SaveExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".sav", ".save", ".sl2", ".co2", ".dat", ".bin", ".slot", ".profile", ".slt", ".db", ".sqlite", ".xml",
-        ".cfg", ".ini", ".tres", ".rpgsave", ".ess", ".fos", ".srm", ".mcr", ".gpd", ".bak", ".old", ".autosave",
+        ".sav", ".save", ".sl2", ".co2", ".dat", ".bin", ".slot", ".profile", ".slt", ".db", ".sqlite",
+        ".xml", ".tres", ".rpgsave", ".ess", ".fos", ".srm", ".mcr", ".gpd", ".autosave",
+    };
+
+    // A game-folder root such as %APPDATA%\\EldenRing can contain ordinary config files beside its save.
+    // Only distinctive save extensions are accepted at that ambiguous level; recognized Save folders use SaveExtensions.
+    private static readonly HashSet<string> DirectNativeSaveExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".sav", ".save", ".sl2", ".co2", ".slot", ".profile", ".slt", ".tres", ".rpgsave", ".ess", ".fos", ".srm", ".mcr", ".gpd", ".autosave",
     };
 
     private static readonly string[] SaveTokens =
-        ["Save", "Saves", "SaveData", "SaveGames", "Saved", "SavedGames", "Remote", "Storage", "Slot0", "Slot1", "Slot2", "Slot3", "Slot4", "Profiles", "PlayerData"];
+        ["Save", "Saves", "SaveData", "SaveGames", "Saved", "SavedGames", "Slot0", "Slot1", "Slot2", "Slot3", "Slot4", "PlayerData"];
 
     private static readonly string[] SkipNames =
         ["achievements.json", "achievements.cfg", "achievements.dat", "playtime.txt", "unlock-state.json", "steam_appid.txt", "stats.db", "TROPCONF.SFM", "TROPUSR.DAT", "TROPHY.TRP"];
@@ -35,6 +43,38 @@ public static class SaveFileDiscoverer
     {
         "Cache", "Crashes", "CrashReport", "CrashReports", "Crash", "Logs", "Log", "Screenshots",
         "ShaderCache", "Shaders", "D3D12", "D3DDriverByteCodeBlob", "WebCache", "GPUCache",
+        "Mozilla", "Firefox", "Google", "Chrome", "Chromium", "BraveSoftware", "Opera Software", "Vivaldi",
+        "Yandex", "MicrosoftEdge", "User Data", "Application Data", "Local Storage", "Session Storage",
+        "IndexedDB", "Service Worker", "Extensions", "Cookies", "Code Cache", "CrashDumps", "Temp",
+        "Settings", "Config", "Configs",
+    };
+
+    // Browser and shell profiles contain SQLite databases, JSON and other extensions that also appear in
+    // game save folders. They are never treated as unlinked game-save roots.
+    private static readonly HashSet<string> SkipNativeAppDataRoots = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Mozilla", "Google", "BraveSoftware", "Opera Software", "Vivaldi", "Yandex", "MicrosoftEdge",
+        "Packages", "ConnectedDevicesPlatform", "CrashDumps", "Temp", "Microsoft", "Valve", "Steam",
+        "Discord", "NVIDIA", "NVIDIA Corporation", "Adobe", "Electronic Arts", "EA Desktop",
+        "Ubisoft Game Launcher", "Epic Games", "GOG.com", "Battle.net", "Riot Games", "Riot Client",
+    };
+
+    private static readonly HashSet<string> BrowserProfilePathNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Mozilla", "Firefox", "Google", "Chrome", "Chromium", "BraveSoftware", "Opera Software",
+        "Vivaldi", "Yandex", "MicrosoftEdge", "Edge",
+    };
+
+    // Ambiguous AppData folders require a precise save leaf. Generic names like Profiles/Storage are
+    // common in browser and application data and are only accepted in platform-specific configured roots.
+    private static readonly HashSet<string> LooseNativeSaveLeafFolderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Save", "Saves", "SaveData", "SaveGames", "Saved", "SavedGames", "Remote", "PlayerData", "Autosave", "Autosaves",
+    };
+
+    private static readonly HashSet<string> ConfiguredSaveLeafFolderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Save", "Saves", "SaveData", "SaveGames", "Saved", "SavedGames", "PlayerData", "Autosave", "Autosaves",
     };
 
     /// <summary>AppID-scoped emulator/launcher roots. Placeholders: {appid}.</summary>
@@ -96,6 +136,33 @@ public static class SaveFileDiscoverer
         @"E:\SteamLibrary\steamapps",
     ];
 
+    private static bool IsGameSaveRoot(string rootKey) =>
+        !rootKey.Contains("settings", StringComparison.OrdinalIgnoreCase)
+        && !rootKey.Contains("achievement", StringComparison.OrdinalIgnoreCase)
+        && !rootKey.Equals("CreamApi", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnscopedApplicationDataRoot(string root)
+    {
+        string fullPath;
+        try { fullPath = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+        catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException) { return true; }
+
+        var segments = fullPath.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Any(BrowserProfilePathNames.Contains)) return true;
+
+        // A whole roaming/local profile is too broad: it contains unrelated application data.
+        if (segments.Length > 0 && (segments[^1].Equals("AppData", StringComparison.OrdinalIgnoreCase)
+            || segments[^1].Equals("Roaming", StringComparison.OrdinalIgnoreCase)
+            || segments[^1].Equals("Local", StringComparison.OrdinalIgnoreCase)
+            || segments[^1].Equals("LocalLow", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (segments[^1].Equals("AppData", StringComparison.OrdinalIgnoreCase)) return true;
+            if (segments.Length >= 2 && segments[^2].Equals("AppData", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+
+        return false;
+    }
+
     /// <summary>Discovers save files for each requested AppID (with optional per-game titles for native roots).</summary>
     public static Task<IReadOnlyList<DiscoveredSaveFile>> DiscoverAsync(
         IReadOnlySet<string> appIds,
@@ -117,6 +184,7 @@ public static class SaveFileDiscoverer
 
                 foreach (var (key, template) in SaveRoots)
                 {
+                    if (!IsGameSaveRoot(key)) continue;
                     var root = Expand(template, appId, null);
                     if (root is null || !Directory.Exists(root)) continue;
                     CollectAll(root, key, appId, results, cancellationToken);
@@ -129,6 +197,122 @@ public static class SaveFileDiscoverer
                     foreach (var (key, template) in NativeGameRoots)
                     {
                         CollectNativeRoot(template, key, appId, title, results, cancellationToken);
+                    }
+                }
+            }
+
+            return (IReadOnlyList<DiscoveredSaveFile>)results;
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Finds native saves under known titles and safely identifies previously unknown game folders from
+    /// distinctive save files. Unknown folders are returned as temporary native IDs for exact Steam title resolution.
+    /// </summary>
+    public static Task<IReadOnlyList<DiscoveredSaveFile>> DiscoverUnlinkedNativeSavesAsync(
+        IReadOnlyDictionary<string, string> appIdToTitle,
+        CancellationToken cancellationToken = default,
+        string? roamingRootOverride = null,
+        string? localAppDataRootOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(appIdToTitle);
+        return Task.Run(() =>
+        {
+            var titleToAppId = appIdToTitle
+                .Where(pair => AppIdValidator.IsValid(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+                .GroupBy(pair => NormalizeAlphaNumeric(pair.Value), StringComparer.Ordinal)
+                .Where(group => group.Key.Length > 0 && group.Select(pair => pair.Key).Distinct(StringComparer.Ordinal).Count() == 1)
+                .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);
+            var roots = new[]
+            {
+                (Key: "roaming", Path: roamingRootOverride ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)),
+                (Key: "local", Path: localAppDataRootOverride ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),
+            };
+            var results = new List<DiscoveredSaveFile>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (rootKey, root) in roots)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) continue;
+                string[] gameDirectories;
+                try
+                {
+                    gameDirectories = Directory.GetDirectories(root)
+                        .Where(directory => !SkipDirectories.Contains(Path.GetFileName(directory))
+                            && !SkipNativeAppDataRoots.Contains(Path.GetFileName(directory)))
+                        .Order(StringComparer.OrdinalIgnoreCase)
+                        .Take(2000)
+                        .ToArray();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                   or System.Security.SecurityException) { continue; }
+
+                foreach (var gameDirectory in gameDirectories)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        if ((File.GetAttributes(gameDirectory) & FileAttributes.ReparsePoint) != 0) continue;
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                       or System.Security.SecurityException) { continue; }
+
+                    var title = Path.GetFileName(gameDirectory);
+                    var normalizedTitle = NormalizeAlphaNumeric(title);
+                    if (normalizedTitle.Length < 3) continue;
+                    var appId = titleToAppId.GetValueOrDefault(normalizedTitle);
+                    var isKnownTitle = appId is not null;
+                    appId ??= $"native-{rootKey}-{normalizedTitle}";
+
+                    var platformRootKey = $"native-appdata-{rootKey}";
+                    var planId = appId;
+                    var nativeRepoPrefix = $"AppID/{appId}/save/{platformRootKey}/";
+                    var firstCandidateIndex = results.Count;
+
+                    string[] directFiles;
+                    try { directFiles = Directory.GetFiles(gameDirectory, "*", SearchOption.TopDirectoryOnly); }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                       or System.Security.SecurityException) { directFiles = []; }
+                    foreach (var file in directFiles)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!IsDirectNativeSaveFile(file)) continue;
+                        AddNativeSave(gameDirectory, file, platformRootKey, planId, title, null,
+                            nativeRepoPrefix, results, seen);
+                    }
+
+                    var saveDirectories = (isKnownTitle
+                            ? FindLooseNativeSaveLeafDirectories(gameDirectory, cancellationToken)
+                                .Concat(FindCandidateNativeSaveLeafDirectories(gameDirectory, cancellationToken))
+                            : FindCandidateNativeSaveLeafDirectories(gameDirectory, cancellationToken))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    foreach (var saveDirectory in saveDirectories)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var inferredSaveFolder = !ConfiguredSaveLeafFolderNames.Contains(Path.GetFileName(saveDirectory));
+                        CollectLooseNativeSaveTree(gameDirectory, saveDirectory, platformRootKey, planId, title,
+                            null, nativeRepoPrefix, results, seen, cancellationToken,
+                            distinctiveFilesOnly: inferredSaveFolder);
+                    }
+
+                    if (!isKnownTitle)
+                    {
+                        var candidateSaves = results.Skip(firstCandidateIndex).ToArray();
+                        // Generic application .dat/.db/XML files are common at a profile root. A distinctive
+                        // extension there, or any eligible file inside an explicitly named save folder, is
+                        // enough evidence to try an exact title match.
+                        var hasDistinctiveDirectSave = candidateSaves.Any(save =>
+                            IsDirectNativeSaveFile(save.SourcePath)
+                            && Path.GetDirectoryName(save.SourcePath)?.Equals(gameDirectory, StringComparison.OrdinalIgnoreCase) == true);
+                        var hasSaveLeafPayload = saveDirectories.Any(saveDirectory =>
+                            candidateSaves.Any(save => IsUnderRoot(saveDirectory, save.SourcePath)));
+                        if (!hasDistinctiveDirectSave && !hasSaveLeafPayload)
+                        {
+                            foreach (var save in candidateSaves) seen.Remove(Path.GetFullPath(save.SourcePath));
+                            results.RemoveRange(firstCandidateIndex, candidateSaves.Length);
+                        }
                     }
                 }
             }
@@ -228,7 +412,9 @@ public static class SaveFileDiscoverer
             foreach (var (platform, rootKey, configuredRoot) in ConfiguredPlatformRoots(options))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (string.IsNullOrWhiteSpace(configuredRoot) || !Directory.Exists(configuredRoot)) continue;
+                if (string.IsNullOrWhiteSpace(configuredRoot)
+                    || IsUnscopedApplicationDataRoot(configuredRoot)
+                    || !Directory.Exists(configuredRoot)) continue;
                 var root = Path.GetFullPath(configuredRoot);
                 foreach (var saveDirectory in FindSaveDataDirectories(root, cancellationToken))
                 {
@@ -313,13 +499,15 @@ public static class SaveFileDiscoverer
     private static void CollectAll(string root, string rootKey, string appId, List<DiscoveredSaveFile> results, CancellationToken cancellationToken)
     {
         var count = 0;
-        Enumerate(root, root, rootKey, appId, 0, results, ref count, cancellationToken, filterExtensions: false);
+        Enumerate(root, root, rootKey, appId, 0, results, ref count, cancellationToken,
+            filterExtensions: true, allowExtensionless: false);
     }
 
     private static void CollectFiltered(string root, string current, string rootKey, string appId, List<DiscoveredSaveFile> results, CancellationToken cancellationToken)
     {
         var count = 0;
-        Enumerate(current, current, rootKey, appId, 0, results, ref count, cancellationToken, filterExtensions: true);
+        Enumerate(current, current, rootKey, appId, 0, results, ref count, cancellationToken,
+            filterExtensions: true, allowExtensionless: true);
     }
 
     /// <summary>Leaf folder names that by definition contain only save data; deep files under them are all
@@ -341,7 +529,7 @@ public static class SaveFileDiscoverer
             "xbox360" => [("xbox360", options.Xbox360Root), ("xenia", options.XeniaRoot)],
             "playstation" => [("rpcs3", options.Rpcs3Root), ("ps4", options.Ps4Root), ("ps5", options.Ps5Root)],
             "recomp" => [("recomp", options.RecompRoot), ("ladxhd", options.LadxhdRoot)],
-            "uplay" => [("uplayrune", options.UplayRuneRoot), ("uplay", options.UplayRoot)],
+            "uplay" => [("uplayrune", options.UplayRuneRoot), ("uplay", options.UplayRoot), ("uplay-cache", options.UplayCacheRoot)],
             "switch2" => [("lichii", options.LichiiRoot), ("eglantine", options.EglantineRoot)],
             "switch2recomp" => [("switch2recomp", options.Switch2RecompRoot)],
             "xbox" => [("xblen", options.XblenRoot), ("xboxpc", options.XboxPcRoot)],
@@ -354,8 +542,11 @@ public static class SaveFileDiscoverer
 
     private static IEnumerable<(string Platform, string RootKey, string? Root)> ConfiguredPlatformRoots(PlatformSourceOptions options) =>
     [
+        ("xbox", "xblen", options.XblenRoot),
+        ("xbox", "xboxpc", options.XboxPcRoot),
         ("xbox360", "xbox360", options.Xbox360Root),
         ("xbox360", "xenia", options.XeniaRoot),
+        ("gfwl", "gfwl", options.GfwlRoot),
         ("recomp", "recomp", options.RecompRoot),
         ("recomp", "ladxhd", options.LadxhdRoot),
         ("playstation", "rpcs3", options.Rpcs3Root),
@@ -363,6 +554,10 @@ public static class SaveFileDiscoverer
         ("playstation", "ps5", options.Ps5Root),
         ("uplay", "uplayrune", options.UplayRuneRoot),
         ("uplay", "uplay", options.UplayRoot),
+        ("uplay", "uplay-cache", options.UplayCacheRoot),
+        ("gog", "gog", options.GogRoot),
+        ("epic", "epic", options.EpicRoot),
+        ("ea", "ea", options.EaRoot),
         ("switch2", "lichii", options.LichiiRoot),
         ("switch2", "eglantine", options.EglantineRoot),
         ("switch2recomp", "switch2recomp", options.Switch2RecompRoot),
@@ -371,7 +566,9 @@ public static class SaveFileDiscoverer
     private static IEnumerable<string> FindSaveDataDirectories(string root, CancellationToken cancellationToken)
     {
         var result = new List<string>();
-        if (SaveLeafFolderNames.Contains(Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))))
+        if (ConfiguredSaveLeafFolderNames.Contains(Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+            || Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                .Equals("Remote", StringComparison.OrdinalIgnoreCase))
             result.Add(root);
         var pending = new Stack<(string Path, int Depth)>();
         pending.Push((root, 0));
@@ -387,7 +584,7 @@ public static class SaveFileDiscoverer
             foreach (var child in children)
             {
                 var name = Path.GetFileName(child);
-                if (SaveLeafFolderNames.Contains(name))
+                if (ConfiguredSaveLeafFolderNames.Contains(name))
                 {
                     result.Add(child);
                     continue;
@@ -432,6 +629,7 @@ public static class SaveFileDiscoverer
         "ps5" => options.Ps5Root,
         "uplayrune" => options.UplayRuneRoot,
         "uplay" => options.UplayRoot,
+        "uplay-cache" => options.UplayCacheRoot,
         "lichii" => options.LichiiRoot,
         "eglantine" => options.EglantineRoot,
         "switch2recomp" => options.Switch2RecompRoot,
@@ -533,6 +731,127 @@ public static class SaveFileDiscoverer
         return results;
     }
 
+    private static IEnumerable<string> FindLooseNativeSaveLeafDirectories(string gameDirectory, CancellationToken cancellationToken)
+    {
+        var results = new List<string>();
+        var pending = new Stack<(string Path, int Depth)>();
+        pending.Push((gameDirectory, 0));
+        var visited = 0;
+        while (pending.Count > 0 && visited++ < 128)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (directory, depth) = pending.Pop();
+            if (depth >= 4) continue;
+            string[] children;
+            try
+            {
+                children = Directory.GetDirectories(directory)
+                    .Where(child => !SkipDirectories.Contains(Path.GetFileName(child)))
+                    .Take(500)
+                    .ToArray();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or System.Security.SecurityException) { continue; }
+
+            foreach (var child in children)
+            {
+                var name = Path.GetFileName(child);
+                if (LooseNativeSaveLeafFolderNames.Contains(name))
+                {
+                    results.Add(child);
+                    continue;
+                }
+                try
+                {
+                    if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
+                        pending.Push((child, depth + 1));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                   or System.Security.SecurityException) { }
+            }
+        }
+
+        return results;
+    }
+
+    private static IEnumerable<string> FindCandidateNativeSaveLeafDirectories(string gameDirectory, CancellationToken cancellationToken)
+    {
+        var results = new List<string>();
+        var pending = new Stack<(string Path, int Depth)>();
+        pending.Push((gameDirectory, 0));
+        var visited = 0;
+        while (pending.Count > 0 && visited++ < 256)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (directory, depth) = pending.Pop();
+            if (depth >= 5) continue;
+            string[] children;
+            try
+            {
+                children = Directory.GetDirectories(directory)
+                    .Where(child => !SkipDirectories.Contains(Path.GetFileName(child)))
+                    .Take(256)
+                    .ToArray();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or System.Security.SecurityException) { continue; }
+
+            foreach (var child in children)
+            {
+                var name = Path.GetFileName(child);
+                if (ConfiguredSaveLeafFolderNames.Contains(name))
+                {
+                    results.Add(child);
+                    continue;
+                }
+                if (ContainsDirectNativeSaveFile(child))
+                {
+                    // Some native game stores put saves directly in a profile/account subfolder
+                    // (for example %APPDATA%\EldenRing\<SteamID>) instead of naming it Save.
+                    results.Add(child);
+                    continue;
+                }
+                try
+                {
+                    if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
+                        pending.Push((child, depth + 1));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                   or System.Security.SecurityException) { }
+            }
+        }
+        return results;
+    }
+
+    private static bool ContainsDirectNativeSaveFile(string directory)
+    {
+        try { return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly).Any(IsDirectNativeSaveFile); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                           or System.Security.SecurityException) { return false; }
+    }
+
+    private static bool IsDirectNativeSaveFile(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (DirectNativeSaveExtensions.Contains(extension)) return true;
+        return extension.Equals(".bak", StringComparison.OrdinalIgnoreCase) && IsPairedSaveBackup(path);
+    }
+
+    private static bool IsPairedSaveBackup(string path)
+    {
+        var withoutBackupExtension = Path.GetFileNameWithoutExtension(path);
+        var originalExtension = Path.GetExtension(withoutBackupExtension);
+        if (DirectNativeSaveExtensions.Contains(originalExtension)) return true;
+
+        var directory = Path.GetDirectoryName(path);
+        if (directory is null) return false;
+        foreach (var extension in DirectNativeSaveExtensions)
+        {
+            if (File.Exists(Path.Combine(directory, withoutBackupExtension + extension))) return true;
+        }
+        return false;
+    }
+
     private static bool IsSaveAreaPath(string configuredRoot, string path)
     {
         var rootName = Path.GetFileName(configuredRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -579,7 +898,7 @@ public static class SaveFileDiscoverer
             foreach (var file in files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!IsSaveFile(file) || !seen.Add(Path.GetFullPath(file))) continue;
+                if (!IsSaveFile(file, allowExtensionless: true) || !seen.Add(Path.GetFullPath(file))) continue;
                 var info = new FileInfo(file);
                 if (info.Length > MaximumFileBytes) continue;
                 string hash;
@@ -646,6 +965,14 @@ public static class SaveFileDiscoverer
             ? safe
             : "unknown";
 
+    private static string SanitizeNativeRepoSegment(string value)
+    {
+        var safe = SanitizeRepoSegment(value);
+        while (safe.Contains("..", StringComparison.Ordinal))
+            safe = safe.Replace("..", "_", StringComparison.Ordinal);
+        return safe is "." or ".." ? "unknown" : safe;
+    }
+
     private static void CollectNativeRoot(
         string template,
         string rootKey,
@@ -673,6 +1000,103 @@ public static class SaveFileDiscoverer
                 TokenScan(directory, directory, rootKey, appId, 0, results, cancellationToken);
             }
         }
+    }
+
+    private static void CollectLooseNativeSaveTree(
+        string gameDirectory,
+        string saveDirectory,
+        string rootKey,
+        string appId,
+        string title,
+        string? repositoryFolder,
+        string repositoryPrefix,
+        List<DiscoveredSaveFile> results,
+        HashSet<string> seen,
+        CancellationToken cancellationToken,
+        bool distinctiveFilesOnly = false)
+    {
+        var pending = new Stack<(string Path, int Depth)>();
+        pending.Push((saveDirectory, 0));
+        var visited = 0;
+        var count = 0;
+        while (pending.Count > 0 && visited++ < 10_000 && count < MaximumFilesPerAppId)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (directory, depth) = pending.Pop();
+            if (depth > MaximumDepth) continue;
+            string[] files;
+            string[] children;
+            try
+            {
+                files = Directory.GetFiles(directory);
+                children = Directory.GetDirectories(directory)
+                    .Where(child => !SkipDirectories.Contains(Path.GetFileName(child))).ToArray();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or System.Security.SecurityException) { continue; }
+
+            foreach (var file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (distinctiveFilesOnly ? !IsDirectNativeSaveFile(file) : !IsSaveFile(file, allowExtensionless: true)) continue;
+                var before = results.Count;
+                AddNativeSave(gameDirectory, file, rootKey, appId, title, repositoryFolder,
+                    repositoryPrefix, results, seen);
+                if (results.Count > before) count++;
+            }
+
+            foreach (var child in children)
+            {
+                try
+                {
+                    if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
+                        pending.Push((child, depth + 1));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                   or System.Security.SecurityException) { }
+            }
+        }
+    }
+
+    private static void AddNativeSave(
+        string gameDirectory,
+        string file,
+        string rootKey,
+        string appId,
+        string title,
+        string? repositoryFolder,
+        string repositoryPrefix,
+        List<DiscoveredSaveFile> results,
+        HashSet<string> seen)
+    {
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(file);
+            if (!IsUnderRoot(gameDirectory, fullPath) || !seen.Add(fullPath)) return;
+            if ((File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) != 0) return;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException
+                                           or System.Security.SecurityException or NotSupportedException) { return; }
+
+        var info = new FileInfo(fullPath);
+        if (!info.Exists || info.Length > MaximumFileBytes) return;
+        string hash;
+        try
+        {
+            using var stream = File.OpenRead(fullPath);
+            hash = Convert.ToHexString(SHA256.HashData(stream));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                           or System.Security.SecurityException) { return; }
+
+        string relative;
+        try { relative = Path.GetRelativePath(gameDirectory, fullPath); }
+        catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException) { return; }
+        if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return;
+        var repoPath = repositoryPrefix + SanitizeRepoRelative(relative);
+        results.Add(new DiscoveredSaveFile(appId, rootKey, relative, fullPath, info.Length, hash,
+            repoPath, repositoryFolder, title));
     }
 
     private static IEnumerable<string> ExpandWildcard(string expandedPattern, string? titleToMatch = null)
@@ -774,12 +1198,13 @@ public static class SaveFileDiscoverer
         return SaveTokens.Any(token => string.Equals(token, directoryName, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static bool IsSaveFile(string path)
+    private static bool IsSaveFile(string path, bool allowExtensionless = false)
     {
         var name = Path.GetFileName(path);
         if (SkipNames.Any(skip => string.Equals(skip, name, StringComparison.OrdinalIgnoreCase))) return false;
         var extension = Path.GetExtension(path);
-        if (string.IsNullOrEmpty(extension)) return true; // extensionless container saves (WGS, custom formats)
+        if (string.IsNullOrEmpty(extension)) return allowExtensionless;
+        if (extension.Equals(".bak", StringComparison.OrdinalIgnoreCase)) return IsPairedSaveBackup(path);
         return SaveExtensions.Contains(extension);
     }
 
@@ -812,7 +1237,8 @@ public static class SaveFileDiscoverer
         List<DiscoveredSaveFile> results,
         ref int count,
         CancellationToken cancellationToken,
-        bool filterExtensions)
+        bool filterExtensions,
+        bool allowExtensionless)
     {
         if (depth > MaximumDepth || count >= MaximumFilesPerAppId) return;
         cancellationToken.ThrowIfCancellationRequested();
@@ -835,7 +1261,9 @@ public static class SaveFileDiscoverer
             var name = Path.GetFileName(file);
             if (SkipNames.Any(skip => string.Equals(skip, name, StringComparison.OrdinalIgnoreCase))) continue;
             var extension = Path.GetExtension(file);
-            if (filterExtensions && !string.IsNullOrEmpty(extension) && !SaveExtensions.Contains(extension)) continue;
+            if (filterExtensions && (string.IsNullOrEmpty(extension)
+                    ? !allowExtensionless
+                    : !SaveExtensions.Contains(extension))) continue;
             string relative;
             try { relative = Path.GetRelativePath(root, file); }
             catch (Exception exception) when (exception is ArgumentException or NotSupportedException) { continue; }
@@ -857,7 +1285,8 @@ public static class SaveFileDiscoverer
 
         foreach (var directory in directories)
         {
-            Enumerate(root, directory, rootKey, appId, depth + 1, results, ref count, cancellationToken, filterExtensions);
+            Enumerate(root, directory, rootKey, appId, depth + 1, results, ref count, cancellationToken,
+                filterExtensions, allowExtensionless);
         }
     }
 

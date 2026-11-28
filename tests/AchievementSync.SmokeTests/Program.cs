@@ -82,6 +82,34 @@ try
             "achievement icons are downloaded as valid image files into <AppID>/images");
         Check(describedEntries > 0, "online achievement descriptions are cached with their catalog entries");
 
+        var phantomBladeZero = await communityClient.GetCatalogAsync("4115450", "Phantom Blade Zero");
+        Check(phantomBladeZero is not null && phantomBladeZero.Catalog.Achievements.Count > 0
+            && (phantomBladeZero.DeclaredTotal is not > 0 || phantomBladeZero.Catalog.Achievements.Count >= phantomBladeZero.DeclaredTotal.Value),
+            "Steam Community returns all declared Phantom Blade Zero achievement rows after an empty metadata cache");
+        var phantomCatalog = await localCatalogCache.CacheCatalogAsync(
+            "4115450", phantomBladeZero!.Catalog, source: "steam-community", declaredTotal: phantomBladeZero.DeclaredTotal);
+        var phantomImageDirectory = Path.Combine(integrationMetadataRoot, "4115450", "images");
+        var phantomImageFiles = Directory.Exists(phantomImageDirectory)
+            ? Directory.EnumerateFiles(phantomImageDirectory).Where(IsImageFile).ToArray()
+            : [];
+        Check(phantomCatalog is not null && phantomImageFiles.Length > 0,
+            "Phantom Blade Zero achievement icons are downloaded into a fresh Metadata/4115450/images cache");
+        if (args.Contains("--populate-local-phantom-cache", StringComparer.OrdinalIgnoreCase))
+        {
+            var localMetadataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AchievementSync", "Metadata");
+            var perUserLocalCatalogCache = new LocalAchievementCatalogCache(localMetadataRoot);
+            var localCatalog = await perUserLocalCatalogCache.CacheCatalogAsync("4115450", phantomBladeZero!.Catalog,
+                source: "steam-community", declaredTotal: phantomBladeZero.DeclaredTotal);
+            var localImageDirectory = Path.Combine(localMetadataRoot, "4115450", "images");
+            var localImageFiles = Directory.Exists(localImageDirectory)
+                ? Directory.EnumerateFiles(localImageDirectory).Where(IsImageFile).ToArray()
+                : [];
+            Check(localCatalog is not null && localCatalog.Achievements.Count >= 66 && localImageFiles.Length >= 132,
+                "the production cache repopulates LocalAppData AchievementSync/Metadata/4115450 with all achievement icons");
+            Console.WriteLine($"LOCAL CACHE: AppID 4115450; entries={localCatalog?.Achievements.Count ?? 0}; images={localImageFiles.Length}; metadataRoot={localMetadataRoot}.");
+        }
+
         var darkSouls = await communityClient.GetCatalogAsync("374320", "DARK SOULS™ III");
         Check(darkSouls is not null && darkSouls.Catalog.Achievements.Count > 0,
             "Steam Community returns the DARK SOULS III catalog used by the missing-icon regression");
@@ -100,7 +128,7 @@ try
             && offlineCatalog.Achievements.Any(item => AchievementIdentity.IsMetadataImageUri(item.IconUri)),
             "cached achievement catalog and local icon paths can be reloaded offline");
 
-        Console.WriteLine($"CACHE INTEGRATION: screenshots={screenshotFiles.Length}; achievementIcons={validIconFiles}; descriptions={describedEntries}; metadataRoot={integrationMetadataRoot}.");
+        Console.WriteLine($"CACHE INTEGRATION: screenshots={screenshotFiles.Length}; achievementIcons={validIconFiles}; descriptions={describedEntries}; Phantom Blade Zero icons={phantomImageFiles.Length}; metadataRoot={integrationMetadataRoot}.");
         return 0;
     }
 
@@ -579,6 +607,8 @@ try
             return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree-old"}}"""));
         if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal))
             return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(remoteAchievementJson)) + "\"}"));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/restoration-manifest.json", StringComparison.Ordinal))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         if (request.Method == HttpMethod.Post && path.EndsWith("/git/blobs", StringComparison.Ordinal))
         {
             githubPushCalls++;
@@ -615,12 +645,12 @@ try
             && preview.Changes[0].ProposedJson.Contains("ACH_REMOTE", StringComparison.Ordinal),
             "GitHub preview preserves remote-only achievements and restricts output paths");
         var push = await github.PushAsync("synthetic-token", preview);
-        Check(push.Pushed && push.UpdatedFiles == 1 && githubPushCalls == 4,
-            "GitHub API push creates one content-only commit from a reviewed preview");
+        Check(push.Pushed && push.UpdatedFiles == 1 && githubPushCalls == 5,
+            "GitHub API push creates one reviewed achievement commit and its restoration manifest");
         var concurrentWriteStopped = false;
         try { _ = await github.PushAsync("synthetic-token", preview); }
         catch (GitHubConcurrentUpdateException) { concurrentWriteStopped = true; }
-        Check(concurrentWriteStopped && githubPushCalls == 4,
+        Check(concurrentWriteStopped && githubPushCalls == 5,
             "GitHub push refuses a stale preview before creating commit data");
     }
     var numericMerge = AchievementJsonMerge.Merge(
@@ -814,6 +844,106 @@ try
     Check((System.Windows.Visibility)emptyStateVisibility.Invoke(null, [0])! == System.Windows.Visibility.Visible
         && (System.Windows.Visibility)emptyStateVisibility.Invoke(null, [1])! == System.Windows.Visibility.Collapsed,
         "game details show an explanatory empty state only when no achievements match");
+    var metadataImagePath = Path.Combine(tempRoot, "Metadata", "4115450", "images", "fixture.png");
+    var metadataImageUri = new Uri(metadataImagePath).AbsoluteUri;
+    var missingArtworkCheck = detailsWindowType.GetMethod(
+        "IsMissingMetadataArtwork", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("The missing metadata artwork check was not found.");
+    Check((bool)missingArtworkCheck.Invoke(null, [metadataImageUri])!,
+        "game details recognize metadata image URIs whose cache files were deleted");
+    var missingCatalogArtworkCheck = detailsWindowType.GetMethod(
+        "HasMissingCachedArtwork", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("The game catalog artwork completeness check was not found.");
+    var profileWithoutArtwork = new GameProfile("4115450", "Fixture game", [],
+        [new AchievementRecord("ACH_FIXTURE", "Fixture achievement", "Description", null, null)], false);
+    Check((bool)missingCatalogArtworkCheck.Invoke(null, [profileWithoutArtwork])!,
+        "game details refresh metadata when achievement rows have no icon source");
+    var gameDetailsSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
+        "src", "AchievementSync.Desktop", "GameDetailsWindow.xaml.cs"));
+    var mainWindowSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
+        "src", "AchievementSync.Desktop", "MainWindow.xaml.cs"));
+    var mainViewModelSourceForArtwork = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
+        "src", "AchievementSync.Desktop", "ViewModels", "MainViewModel.cs"));
+    Check(gameDetailsSource.Contains("await _refreshCatalogAsync();", StringComparison.Ordinal)
+        && mainWindowSource.Contains("RefreshGameMetadataAsync(game)", StringComparison.Ordinal)
+        && mainViewModelSourceForArtwork.Contains("RefreshGameMetadataAsync(GameCardViewModel game) => LoadViewerDataAsync(game)", StringComparison.Ordinal),
+        "missing game-detail icons retry the configured full Achievement Viewer catalog before Steam Community");
+    var communityCacheFreshnessCheck = typeof(SteamCommunityCatalogClient).GetMethod(
+        "IsFreshCommunityCache", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("The Steam Community cache freshness check was not found.");
+    var cachedIconProfile = new ParsedProfile("4115450", "Steam Community", "fixture://catalog",
+        DateTimeOffset.UtcNow,
+        [new AchievementRecord("ACH_FIXTURE", "Fixture achievement", "Fixture description", null, null,
+            IconUri: metadataImageUri)], false, "Fixture game", CommunityFetchedAtUtc: DateTimeOffset.UtcNow);
+    Check(!(bool)communityCacheFreshnessCheck.Invoke(null, [cachedIconProfile, "Fixture game"])!,
+        "Steam Community catalogs with deleted local icon files are stale and eligible for redownload");
+    Directory.CreateDirectory(Path.GetDirectoryName(metadataImagePath)!);
+    await File.WriteAllBytesAsync(metadataImagePath, pngBytes);
+    Check((bool)communityCacheFreshnessCheck.Invoke(null, [cachedIconProfile, "Fixture game"])!,
+        "Steam Community catalogs become fresh again after their image files are restored");
+    var structuredCommunityParser = typeof(SteamCommunityCatalogClient).GetMethod(
+        "ParseStructuredAchievements", BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("The Steam Community structured achievement parser was not found.");
+    var structuredRows = Enumerable.Range(1, 66).Select(index => new
+    {
+        name = $"Fixture achievement {index}",
+        api_name = $"ACH_{index:D3}",
+        description = index == 27 ? "Open the [bracketed] passage" : "Fixture description",
+        icon_achieved = $"https://cdn.steamstatic.com/steamcommunity/public/images/apps/4115450/{index:D3}.jpg",
+        icon_unachieved = $"https://cdn.steamstatic.com/steamcommunity/public/images/apps/4115450/{index:D3}_gray.jpg",
+        hidden = false,
+        tags = new[] { "base-game", "fixture" }
+    }).ToArray();
+    var structuredRowsJson = JsonSerializer.Serialize(new { achievements = structuredRows });
+    var parsedStructuredRows = (IReadOnlyList<AchievementRecord>)structuredCommunityParser.Invoke(
+        null, ["4115450", structuredRowsJson])!;
+    Check(parsedStructuredRows.Count == 66,
+        "Steam Community parser handles nested JSON arrays and brackets inside strings without truncating achievements");
+    var filenameIconRows = (IReadOnlyList<AchievementRecord>)structuredCommunityParser.Invoke(
+        null,
+        ["4115450", """{"achievements":[{"name":"Filename icon","api_name":"ACH_FILENAME","description":"Fixture","icon_achieved":"earned-hash.jpg","icon_unachieved":"locked-hash.jpg","hidden":false}]}"""])!;
+    Check(filenameIconRows.Single().IconUri == "https://shared.fastly.steamstatic.com/community_assets/images/apps/4115450/earned-hash.jpg"
+        && filenameIconRows.Single().LockedIconUri == "https://shared.fastly.steamstatic.com/community_assets/images/apps/4115450/locked-hash.jpg",
+        "Steam Community bare icon filenames resolve to their AppID asset URLs instead of being mistaken for file URIs");
+
+    var offlineIconMetadata = Path.Combine(tempRoot, "offline-achievement-icons");
+    var iconRequestCount = 0;
+    using (var iconDownloadHttp = new HttpClient(new TestHttpHandler((_, _) =>
+    {
+        Interlocked.Increment(ref iconRequestCount);
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(pngBytes)
+        });
+    })))
+    {
+        var communityCatalogCache = new LocalAchievementCatalogCache(offlineIconMetadata, httpClient: iconDownloadHttp);
+        var previouslyCachedCatalog = new ParsedProfile("4115450", "Viewer", "fixture://viewer-catalog",
+            DateTimeOffset.UtcNow,
+            [new AchievementRecord("ACH_FILENAME", "Filename icon", "Fixture", null, null)],
+            true, "Fixture game", DeclaredCatalogTotal: 1);
+        await communityCatalogCache.CacheCatalogAsync("4115450", previouslyCachedCatalog, source: "viewer", declaredTotal: 1);
+        var fixtureIconCatalog = new ParsedProfile("4115450", "Steam Community", "fixture://community-catalog",
+            DateTimeOffset.UtcNow,
+            [new AchievementRecord("ACH_FILENAME", "Filename icon", "Fixture", null, null,
+                IconUri: filenameIconRows.Single().IconUri,
+                IsHidden: false,
+                LockedIconUri: filenameIconRows.Single().LockedIconUri)],
+            true, "Fixture game", DeclaredCatalogTotal: 1);
+        var populatedCatalog = await communityCatalogCache.CacheCatalogAsync(
+            "4115450", fixtureIconCatalog, source: "steam-community", declaredTotal: 1);
+        var imageFiles = Directory.Exists(Path.Combine(offlineIconMetadata, "4115450", "images"))
+            ? Directory.EnumerateFiles(Path.Combine(offlineIconMetadata, "4115450", "images")).ToArray()
+            : [];
+        var offlineCatalog = new LocalAchievementCatalogCache(offlineIconMetadata).LoadCatalog("4115450");
+        Check(populatedCatalog is not null && iconRequestCount == 2 && imageFiles.Length == 2
+            && imageFiles.All(IsImageFile)
+            && offlineCatalog?.Achievements.Single().IconUri is { } offlineIcon
+            && LocalAchievementCatalogCache.IsValidMetadataImageUri(offlineIcon),
+            "Steam achievement icons are downloaded, validated, and reload from Metadata offline after restart");
+        Check((bool)communityCacheFreshnessCheck.Invoke(null, [offlineCatalog, "Fixture game"])!,
+            "a complete on-disk community icon cache is accepted as fresh without a network refresh");
+    }
     var detailsXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
         "src", "AchievementSync.Desktop", "GameDetailsWindow.xaml"));
     Check(detailsXaml.Contains("x:Name=\"CatalogNote\"", StringComparison.Ordinal)
@@ -1644,6 +1774,9 @@ try
             return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree-old"}}"""));
         if (request.Method == HttpMethod.Get && (path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal) || path.EndsWith("/contents/AppID/570/achievements.json", StringComparison.Ordinal)))
             return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(bulkRemoteAchievement)) + "\"}"));
+        if (request.Method == HttpMethod.Get && (path.EndsWith("/contents/AppID/730/restoration-manifest.json", StringComparison.Ordinal)
+            || path.EndsWith("/contents/AppID/570/restoration-manifest.json", StringComparison.Ordinal)))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/GOG.platform", StringComparison.Ordinal))
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         if (request.Method == HttpMethod.Post && path.EndsWith("/git/blobs", StringComparison.Ordinal))
@@ -1676,14 +1809,17 @@ try
         var markerFile = new AchievementExportFile("AppID/730/GOG.platform", "730", 0, string.Empty);
         var bulkResult = await bulkClient.PushBulkAsync("synthetic-token", bulkTarget, [changedFile, unchangedFile, markerFile]);
         Check(bulkResult.Pushed && bulkResult.AchievementFilesPushed == 2 && bulkResult.AchievementFilesUnchanged == 1
-            && bulkResult.Entries.Count == 3,
-            "bulk sync pushes changed achievement JSON and empty platform markers in one commit, reporting unchanged files");
-        Check(bulkResult.CommitUrl is not null && bulkCalls == 5 && bulkResult.Entries.Count(entry => entry.Action == "pushed") == 2,
-            "bulk sync returns a commit URL and per-AppID write results");
+            && bulkResult.Entries.Count == 5,
+            "bulk sync pushes achievement JSON, empty markers, and restore manifests while reporting unchanged files");
+        Check(bulkResult.CommitUrl is not null && bulkCalls == 7 && bulkResult.Entries.Count(entry => entry.Action == "pushed") == 4,
+            "bulk sync returns a commit URL and per-AppID achievement and manifest results");
         Check(bulkBlobContents.Contains(string.Empty, StringComparer.Ordinal)
             && bulkTreePaths.Contains("AppID/730/GOG.platform", StringComparer.Ordinal)
+            && bulkTreePaths.Contains("AppID/730/restoration-manifest.json", StringComparer.Ordinal)
+            && bulkTreePaths.Contains("AppID/570/restoration-manifest.json", StringComparer.Ordinal)
+            && bulkBlobContents.Any(content => content.Contains("%LOCALAPPDATA%", StringComparison.Ordinal))
             && bulkBlobContents.Any(content => content.Contains("ACH_NEW", StringComparison.Ordinal)),
-            "bulk sync creates a zero-byte platform marker blob and includes its path in the GitHub tree");
+            "bulk sync writes source-path manifests beside achievement files and preserves empty platform markers");
         var markerPreviewViewModel = new ExportPreviewFileViewModel(markerFile, newUnlocks: 0);
         Check(markerPreviewViewModel.IsEmptyMarker
             && markerPreviewViewModel.Summary.Contains("uploaded as 0 bytes", StringComparison.Ordinal)
@@ -1735,6 +1871,30 @@ try
     Check(PathSanitizer.Sanitize(Path.Combine(roamingFull, "GSE Saves", "730", "remote", "save.dat"))
             .Equals("%APPDATA%\\GSE Saves\\730\\remote\\save.dat", StringComparison.Ordinal),
         "path sanitizer prefers %APPDATA% over %USERPROFILE% for the Roaming subtree");
+
+    var originalSaveRootAppData = Environment.GetEnvironmentVariable("APPDATA");
+    var isolatedSaveRootAppData = Path.Combine(tempRoot, "isolated-save-root-appdata");
+    var gseRemoteSave = Path.Combine(isolatedSaveRootAppData, "GSE Saves", "99000123", "remote", "slot.dat");
+    var gseSettingsPayload = Path.Combine(isolatedSaveRootAppData, "GSE Saves", "99000123", "settings", "settings.dat");
+    var creamApiPayload = Path.Combine(isolatedSaveRootAppData, "CreamApi", "99000123", "client.dat");
+    Directory.CreateDirectory(Path.GetDirectoryName(gseRemoteSave)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(gseSettingsPayload)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(creamApiPayload)!);
+    File.WriteAllBytes(gseRemoteSave, [1, 2, 3]);
+    File.WriteAllBytes(gseSettingsPayload, [4, 5, 6]);
+    File.WriteAllBytes(creamApiPayload, [7, 8, 9]);
+    try
+    {
+        Environment.SetEnvironmentVariable("APPDATA", isolatedSaveRootAppData);
+        var appIdScopedSaves = await SaveFileDiscoverer.DiscoverAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["99000123"] = "Synthetic Game" });
+        Check(appIdScopedSaves.Count == 1 && appIdScopedSaves[0].SourcePath == gseRemoteSave,
+            "AppID save roots exclude launcher settings and CreamAPI application data even when they use save-like extensions");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("APPDATA", originalSaveRootAppData);
+    }
 
     // Save backup planner: only save files + manifest (achievements data is synced separately).
     var saveRoot = Path.Combine(tempRoot, "backup-planner-saves");
@@ -1800,15 +1960,64 @@ try
     // Platform roots contribute save backups even when their achievement adapters return no game snapshots.
     var configuredXeniaRoot = Path.Combine(tempRoot, "configured-xenia");
     var configuredSavePath = Path.Combine(configuredXeniaRoot, "GameOne", "Save", "slot.sav");
+    var configuredBrowserSavePath = Path.Combine(configuredXeniaRoot, "Chrome", "User Data", "Default", "Save", "browser.sav");
+    var configuredGameConfigPath = Path.Combine(configuredXeniaRoot, "GameOne", "Save", "settings.ini");
     Directory.CreateDirectory(Path.GetDirectoryName(configuredSavePath)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(configuredBrowserSavePath)!);
     File.WriteAllBytes(configuredSavePath, [7, 8, 9]);
+    File.WriteAllBytes(configuredBrowserSavePath, [1, 1, 1]);
+    File.WriteAllText(configuredGameConfigPath, "not a game save");
     var configuredPlatformOptions = new PlatformSourceOptions { XeniaRoot = configuredXeniaRoot };
     var configuredPlatformSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync([], configuredPlatformOptions);
     Check(configuredPlatformSaves.Count == 1
         && configuredPlatformSaves[0].SourcePath == configuredSavePath
         && configuredPlatformSaves[0].RootKey == "platform:xenia"
         && configuredPlatformSaves[0].BackupFolder?.StartsWith("PlatformSave/xbox360/xenia/", StringComparison.Ordinal) == true,
-        "configured emulator save roots are scanned without requiring an achievement snapshot");
+        "configured emulator save roots select game saves while excluding browser and settings files without an achievement snapshot");
+    var configuredChromeProfileRoot = Path.Combine(tempRoot, "Google", "Chrome", "User Data");
+    var configuredChromeSavePath = Path.Combine(configuredChromeProfileRoot, "Default", "Save", "browser.sav");
+    Directory.CreateDirectory(Path.GetDirectoryName(configuredChromeSavePath)!);
+    File.WriteAllBytes(configuredChromeSavePath, [3, 3, 3]);
+    var configuredBrowserSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync([], new PlatformSourceOptions
+    {
+        XeniaRoot = configuredChromeProfileRoot
+    });
+    Check(configuredBrowserSaves.Count == 0,
+        "a configured browser profile is excluded even when it contains a folder named Save and save-like extensions");
+    var broadAppDataRoot = Path.Combine(tempRoot, "synthetic-profile", "AppData", "Roaming");
+    var broadAppDataSave = Path.Combine(broadAppDataRoot, "NativeApplication", "Save", "slot.sav");
+    Directory.CreateDirectory(Path.GetDirectoryName(broadAppDataSave)!);
+    File.WriteAllBytes(broadAppDataSave, [4, 4, 4]);
+    var broadAppDataSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync([], new PlatformSourceOptions
+    {
+        XeniaRoot = broadAppDataRoot
+    });
+    Check(broadAppDataSaves.Count == 0,
+        "a whole AppData Roaming root is rejected so unrelated application saves cannot be swept into backups");
+    var independentRootPaths = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["xblen"] = Path.Combine(tempRoot, "configured-xblen"),
+        ["xboxpc"] = Path.Combine(tempRoot, "configured-xboxpc"),
+        ["gfwl"] = Path.Combine(tempRoot, "configured-gfwl"),
+        ["gog"] = Path.Combine(tempRoot, "configured-gog"),
+        ["epic"] = Path.Combine(tempRoot, "configured-epic"),
+        ["ea"] = Path.Combine(tempRoot, "configured-ea"),
+    };
+    foreach (var root in independentRootPaths.Values)
+    {
+        var savePath = Path.Combine(root, "GameOne", "Save", "slot.sav");
+        Directory.CreateDirectory(Path.GetDirectoryName(savePath)!);
+        File.WriteAllBytes(savePath, [2, 4, 6]);
+    }
+    var configuredIndependentSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync([], new PlatformSourceOptions
+    {
+        XblenRoot = independentRootPaths["xblen"], XboxPcRoot = independentRootPaths["xboxpc"],
+        GfwlRoot = independentRootPaths["gfwl"], GogRoot = independentRootPaths["gog"],
+        EpicRoot = independentRootPaths["epic"], EaRoot = independentRootPaths["ea"]
+    });
+    Check(configuredIndependentSaves.Count == independentRootPaths.Count
+        && independentRootPaths.Keys.All(key => configuredIndependentSaves.Any(save => save.RootKey == "platform:" + key)),
+        "configured GOG, Epic, EA, Xbox PC, and GFWL roots participate in independent save backup discovery");
     var recordedCustomPlatformFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         "PreviousXeniaRoot", "GameOne", "Save", "slot.sav");
     Check(SaveFileDiscoverer.ResolveLocalPath("platform:xenia", "GameOne", Path.Combine("GameOne", "Save", "slot.sav"),
@@ -1820,8 +2029,32 @@ try
     var originalAppData = Environment.GetEnvironmentVariable("APPDATA");
     var isolatedAppData = Path.Combine(tempRoot, "isolated-appdata");
     var roamingSavePath = Path.Combine(isolatedAppData, "NativeTitle", "Save", "profile.sav");
+    var eldenRingSavePath = Path.Combine(isolatedAppData, "EldenRing", "ER0000.sl2");
+    var eldenRingAccountDirectory = Path.Combine(isolatedAppData, "EldenRing", "76561197960271872");
+    var eldenRingCo2SavePath = Path.Combine(eldenRingAccountDirectory, "ER0000.co2");
+    var eldenRingCo2BackupPath = Path.Combine(eldenRingAccountDirectory, "ER0000.co2.bak");
+    var eldenRingUnpairedBackupPath = Path.Combine(eldenRingAccountDirectory, "settings.json.bak");
+    var uninstalledNestedSavePath = Path.Combine(isolatedAppData, "NestedGame", "Save", "slot.dat");
+    var unknownNativeSavePath = Path.Combine(isolatedAppData, "UnlinkedGame", "slot.sav");
+    var unknownAppSavePath = Path.Combine(isolatedAppData, "UnlinkedApplication", "Save", "slot.sav");
+    var mozillaProfileDatabase = Path.Combine(isolatedAppData, "Mozilla", "Firefox", "Profiles",
+        "test.default", "storage", "default", "places.sqlite");
     Directory.CreateDirectory(Path.GetDirectoryName(roamingSavePath)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(eldenRingSavePath)!);
+    Directory.CreateDirectory(eldenRingAccountDirectory);
+    Directory.CreateDirectory(Path.GetDirectoryName(uninstalledNestedSavePath)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(unknownNativeSavePath)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(unknownAppSavePath)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(mozillaProfileDatabase)!);
     File.WriteAllBytes(roamingSavePath, [4, 5, 6]);
+    File.WriteAllBytes(eldenRingSavePath, [7, 8, 9]);
+    File.WriteAllBytes(eldenRingCo2SavePath, [21, 22, 23]);
+    File.WriteAllBytes(eldenRingCo2BackupPath, [24, 25, 26]);
+    File.WriteAllBytes(eldenRingUnpairedBackupPath, [27, 28, 29]);
+    File.WriteAllBytes(uninstalledNestedSavePath, [8, 9, 10]);
+    File.WriteAllBytes(unknownNativeSavePath, [10, 11, 12]);
+    File.WriteAllBytes(unknownAppSavePath, [13, 14, 15]);
+    File.WriteAllBytes(mozillaProfileDatabase, [1, 2, 3]);
     try
     {
         Environment.SetEnvironmentVariable("APPDATA", isolatedAppData);
@@ -1834,6 +2067,62 @@ try
     {
         Environment.SetEnvironmentVariable("APPDATA", originalAppData);
     }
+
+    var steamFixtureRoot = Path.Combine(tempRoot, "steam-title-map");
+    var steamAppsFixture = Path.Combine(steamFixtureRoot, "steamapps");
+    Directory.CreateDirectory(steamAppsFixture);
+    await File.WriteAllTextAsync(Path.Combine(steamAppsFixture, "appmanifest_1245620.acf"),
+        "\"AppState\" { \"appid\" \"1245620\" \"name\" \"ELDEN RING\" }");
+    var installedSteamTitles = SteamInstalledExecutableDiscovery.DiscoverInstalledGameTitles(steamFixtureRoot);
+    var independentNativeSaves = await SaveFileDiscoverer.DiscoverUnlinkedNativeSavesAsync(installedSteamTitles,
+        roamingRootOverride: isolatedAppData, localAppDataRootOverride: Path.Combine(tempRoot, "empty-local-appdata"));
+    var eldenRingSave = independentNativeSaves.SingleOrDefault(save => save.SourcePath == eldenRingSavePath);
+    var unmatchedNativeSave = independentNativeSaves.SingleOrDefault(save => save.SourcePath == unknownNativeSavePath);
+    Check(installedSteamTitles.GetValueOrDefault("1245620") == "ELDEN RING"
+        && eldenRingSave is { AppId: "1245620", BackupFolder: null }
+        && eldenRingSave.RepoPath == "AppID/1245620/save/native-appdata-roaming/ER0000.sl2",
+        "unlinked %APPDATA% game saves map to an exact installed Steam title and back up under its AppID");
+    Check(independentNativeSaves.Any(save => save.SourcePath == eldenRingCo2SavePath
+            && save.RepoPath == "AppID/1245620/save/native-appdata-roaming/76561197960271872/ER0000.co2")
+        && independentNativeSaves.Any(save => save.SourcePath == eldenRingCo2BackupPath
+            && save.RepoPath == "AppID/1245620/save/native-appdata-roaming/76561197960271872/ER0000.co2.bak")
+        && !independentNativeSaves.Any(save => save.SourcePath == eldenRingUnpairedBackupPath),
+        "Elden Ring account-subfolder .co2 saves and paired .bak files are discovered without capturing unrelated backups");
+    Check(unmatchedNativeSave is { AppId: "native-roaming-unlinkedgame" }
+        && independentNativeSaves.Single(save => save.SourcePath == unknownAppSavePath).AppId == "native-roaming-unlinkedapplication",
+        "unmatched AppData save candidates remain temporary native IDs until an exact Steam title match is confirmed");
+    Check(!independentNativeSaves.Any(save => save.SourcePath == mozillaProfileDatabase),
+        "Mozilla Firefox profile databases are excluded from independent native save backup discovery");
+    var independentSavePlan = await SaveBackupPlanner.BuildAsync("1245620", [eldenRingSave!], null, "json");
+    Check(independentSavePlan.Items.Count == 1 && independentSavePlan.Manifest.AchievementSourcePath is null,
+        "an AppID save backup is valid without any matching achievement source file");
+
+    var uninstalledNativeCandidates = await SaveFileDiscoverer.DiscoverUnlinkedNativeSavesAsync(
+        new Dictionary<string, string>(StringComparer.Ordinal), roamingRootOverride: isolatedAppData,
+        localAppDataRootOverride: Path.Combine(tempRoot, "empty-local-appdata"));
+    var resolvedUninstalledCandidates = await NativeSaveAppIdResolver.ResolveAsync(uninstalledNativeCandidates,
+        (title, _) => Task.FromResult<string?>(title.Equals("EldenRing", StringComparison.OrdinalIgnoreCase) ? "1245620"
+            : title.Equals("NestedGame", StringComparison.OrdinalIgnoreCase) ? "7654321"
+            : null));
+    var uninstalledEldenRingSave = resolvedUninstalledCandidates.SingleOrDefault(save => save.SourcePath == eldenRingSavePath);
+    Check(uninstalledEldenRingSave is { AppId: "1245620", BackupFolder: null }
+        && uninstalledEldenRingSave.RepoPath == "AppID/1245620/save/native-appdata-roaming/ER0000.sl2",
+        "an uninstalled Elden Ring AppData save resolves by exact folder-title lookup and maps to AppID 1245620");
+    var resolvedEldenRingCo2Save = resolvedUninstalledCandidates.SingleOrDefault(save => save.SourcePath == eldenRingCo2SavePath);
+    var resolvedEldenRingCo2Backup = resolvedUninstalledCandidates.SingleOrDefault(save => save.SourcePath == eldenRingCo2BackupPath);
+    Check(resolvedEldenRingCo2Save is { AppId: "1245620" }
+        && resolvedEldenRingCo2Save.RepoPath == "AppID/1245620/save/native-appdata-roaming/76561197960271872/ER0000.co2"
+        && resolvedEldenRingCo2Backup is { AppId: "1245620" }
+        && resolvedEldenRingCo2Backup.RepoPath == "AppID/1245620/save/native-appdata-roaming/76561197960271872/ER0000.co2.bak"
+        && !resolvedUninstalledCandidates.Any(save => save.SourcePath == eldenRingUnpairedBackupPath),
+        "uninstalled Elden Ring account-folder .co2 saves and paired .bak files resolve to AppID 1245620");
+    Check(resolvedUninstalledCandidates.Any(save => save.SourcePath == uninstalledNestedSavePath
+        && save.AppId == "7654321"
+        && save.RepoPath == "AppID/7654321/save/native-appdata-roaming/Save/slot.dat"),
+        "an uninstalled game with data under an explicit AppData Save folder resolves even when its save uses .dat");
+    Check(resolvedUninstalledCandidates.Where(save => save.SourcePath == unknownNativeSavePath || save.SourcePath == unknownAppSavePath)
+            .All(save => save.AppId.StartsWith("native-", StringComparison.Ordinal)),
+        "native save candidates without an exact Steam title match are not assigned an AppID or uploaded as games");
 
     // Lichii profile save IDs and optional explicitly present achievement JSON are detected without inventing a native API.
     var lichiiRoot = Path.Combine(tempRoot, "lichii-profile");

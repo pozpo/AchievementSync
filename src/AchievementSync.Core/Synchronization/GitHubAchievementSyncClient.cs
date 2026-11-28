@@ -147,6 +147,31 @@ public sealed class GitHubAchievementSyncClient
             });
         }
 
+        foreach (var appId in preview.Changes
+                     .Where(change => string.Equals(change.RelativePath, $"AppID/{change.AppId}/achievements.json", StringComparison.Ordinal))
+                     .Select(change => change.AppId)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            var manifestPath = $"AppID/{appId}/restoration-manifest.json";
+            var existingManifestJson = await ReadRemoteTextAsync(token, preview.Target, preview.BaseCommitSha,
+                manifestPath, cancellationToken).ConfigureAwait(false);
+            var manifestJson = BuildAchievementRestorationManifest(appId, existingManifestJson).ToJson();
+            if (string.Equals(existingManifestJson, manifestJson, StringComparison.Ordinal)) continue;
+            using var manifestBlobResponse = await SendAsync(HttpMethod.Post,
+                $"repos/{Escape(preview.Target.Owner)}/{Escape(preview.Target.Repository)}/git/blobs",
+                token,
+                new { content = manifestJson, encoding = "utf-8" },
+                cancellationToken);
+            using var manifestBlob = await GitHubDeviceFlowClient.ReadJsonAsync(manifestBlobResponse, cancellationToken);
+            treeEntries.Add(new
+            {
+                path = manifestPath,
+                mode = "100644",
+                type = "blob",
+                sha = GitHubDeviceFlowClient.RequiredString(manifestBlob.RootElement, "sha")
+            });
+        }
+
         using var treeResponse = await SendAsync(HttpMethod.Post,
             $"repos/{Escape(preview.Target.Owner)}/{Escape(preview.Target.Repository)}/git/trees",
             token,
@@ -186,6 +211,7 @@ public sealed class GitHubAchievementSyncClient
         CancellationToken cancellationToken = default)
     {
         ValidateTarget(target);
+        var files = achievementFiles.ToArray();
         var repository = await GetRepositoryAsync(token, target.Owner, target.Repository, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(repository.FullName, $"{target.Owner}/{target.Repository}", StringComparison.OrdinalIgnoreCase))
             throw new GitHubApiException("GitHub redirected the repository name. Verify the owner and repository again.");
@@ -205,7 +231,7 @@ public sealed class GitHubAchievementSyncClient
         var achievementFilesUnchanged = 0;
         var achievementFilesFailed = 0;
 
-        foreach (var file in achievementFiles.OrderBy(file => file.AppId, StringComparer.Ordinal))
+        foreach (var file in files.OrderBy(file => file.AppId, StringComparer.Ordinal))
         {
             try
             {
@@ -249,6 +275,40 @@ public sealed class GitHubAchievementSyncClient
             {
                 achievementFilesFailed++;
                 entries.Add(new BulkSyncEntry(file.AppId, "failed", $"{Path.GetFileName(file.RelativePath)}: {exception.Message}"));
+            }
+        }
+
+        var achievementAppIds = files
+            .Where(file => AppIdValidator.IsValid(file.AppId)
+                && string.Equals(file.RelativePath, $"AppID/{file.AppId}/achievements.json", StringComparison.Ordinal))
+            .Select(file => file.AppId)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        foreach (var appId in achievementAppIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var manifestPath = $"AppID/{appId}/restoration-manifest.json";
+            try
+            {
+                var existingManifestJson = await ReadRemoteTextAsync(token, target, baseCommit, manifestPath,
+                    cancellationToken).ConfigureAwait(false);
+                var manifestJson = BuildAchievementRestorationManifest(appId, existingManifestJson).ToJson();
+                if (string.Equals(existingManifestJson, manifestJson, StringComparison.Ordinal))
+                {
+                    entries.Add(new BulkSyncEntry(appId, "unchanged", "restoration-manifest.json is up to date"));
+                    continue;
+                }
+
+                var manifestSha = await CreateBlobAsync(token, target, manifestJson, encoding: "utf-8", cancellationToken)
+                    .ConfigureAwait(false);
+                treeEntries.Add(new { path = manifestPath, mode = "100644", type = "blob", sha = manifestSha });
+                entries.Add(new BulkSyncEntry(appId, "pushed", "restoration-manifest.json committed"));
+            }
+            catch (Exception exception) when (exception is GitHubApiException or IOException or ArgumentException)
+            {
+                achievementFilesFailed++;
+                entries.Add(new BulkSyncEntry(appId, "failed", $"restoration-manifest.json: {exception.Message}"));
             }
         }
 
@@ -696,6 +756,34 @@ public sealed class GitHubAchievementSyncClient
         var encoded = GitHubDeviceFlowClient.RequiredString(root, "content").Replace("\n", "").Replace("\r", "");
         try { return Encoding.UTF8.GetString(Convert.FromBase64String(encoded)); }
         catch (FormatException exception) { throw new GitHubApiException("A remote backup file is not valid Base64.", exception); }
+    }
+
+    private static RestorationManifest BuildAchievementRestorationManifest(string appId, string? existingJson)
+    {
+        var repositoryFolder = $"AppID/{appId}";
+        var metadataPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "AchievementSync", "metadata", appId, "achievements.json");
+        var existing = RestorationManifest.FromJson(existingJson);
+        if (existing is null)
+        {
+            return RestorationManifest.Create(appId, "json", PathSanitizer.Sanitize(metadataPath),
+                "achievements.json", [], repositoryFolder);
+        }
+
+        return existing with
+        {
+            AppId = appId,
+            AchievementFormat = string.IsNullOrWhiteSpace(existing.AchievementFormat) ? "json" : existing.AchievementFormat,
+            AchievementSourcePath = string.IsNullOrWhiteSpace(existing.AchievementSourcePath)
+                ? PathSanitizer.Sanitize(metadataPath)
+                : existing.AchievementSourcePath,
+            AchievementSourceName = string.IsNullOrWhiteSpace(existing.AchievementSourceName)
+                ? "achievements.json"
+                : existing.AchievementSourceName,
+            Saves = existing.Saves ?? [],
+            RepositoryFolder = repositoryFolder
+        };
     }
 
     private static readonly HttpMethod GetMethod = HttpMethod.Get;

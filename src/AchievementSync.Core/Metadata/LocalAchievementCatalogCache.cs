@@ -19,7 +19,7 @@ public sealed class LocalAchievementCatalogCache
 {
     private const int MaximumIconBytes = 4 * 1024 * 1024;
     private const int MaximumCatalogEntries = 5000;
-    private static readonly HttpClient Http = CreateHttpClient();
+    private static readonly HttpClient DefaultHttp = CreateHttpClient();
 
     private static HttpClient CreateHttpClient()
     {
@@ -40,14 +40,16 @@ public sealed class LocalAchievementCatalogCache
     }
     private readonly string _metadataRoot;
     private readonly string[] _generatorRoots;
+    private readonly HttpClient _http;
     private readonly JsonAchievementParser _jsonParser = new();
     private readonly IniAchievementParser _iniParser = new();
 
-    public LocalAchievementCatalogCache(string? metadataRoot = null, string? adaptersRoot = null)
+    public LocalAchievementCatalogCache(string? metadataRoot = null, string? adaptersRoot = null, HttpClient? httpClient = null)
     {
         _metadataRoot = Path.GetFullPath(metadataRoot ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AchievementSync", "Metadata"));
         _generatorRoots = FindGeneratorRoots(adaptersRoot).ToArray();
+        _http = httpClient ?? DefaultHttp;
     }
 
     public async Task<AchievementCatalogCacheUpdate> UpdateAsync(
@@ -92,8 +94,8 @@ public sealed class LocalAchievementCatalogCache
         {
             var resolvedIcon = AchievementIconResolver.Resolve(item.Icon, path, appId);
             var resolvedLockedIcon = AchievementIconResolver.Resolve(item.IconGray, path, appId);
-            var icon = AchievementIdentity.IsMetadataImageUri(resolvedIcon) ? resolvedIcon : null;
-            var lockedIcon = AchievementIdentity.IsMetadataImageUri(resolvedLockedIcon) ? resolvedLockedIcon : null;
+            var icon = IsValidMetadataImageUri(resolvedIcon) ? resolvedIcon : null;
+            var lockedIcon = IsValidMetadataImageUri(resolvedLockedIcon) ? resolvedLockedIcon : null;
             return new AchievementRecord(
                 item.Name,
                 string.IsNullOrWhiteSpace(item.DisplayName)
@@ -139,6 +141,7 @@ public sealed class LocalAchievementCatalogCache
         if (cached is not null)
         {
             var cachedCatalog = NormalizeCatalog(cached);
+            var incomingCatalog = normalized;
             var incomingGame = new GameProfile(appId, normalized.Title, [normalized.FilePath],
                 normalized.Achievements, normalized.HasCompleteCatalog);
             // Fresh public definitions must replace stale or incomplete cached text. For local
@@ -152,7 +155,10 @@ public sealed class LocalAchievementCatalogCache
                     : ProfileMerger.EnrichWithCatalog(incomingGame, cachedCatalog);
             normalized = normalized with
             {
-                Achievements = merged.Achievements,
+                // ProfileMerger intentionally keeps only already-local image URIs. Restore
+                // trusted HTTPS catalog icons after merging text/progress so this cache can
+                // download them into Metadata/<AppID>/images below.
+                Achievements = RestoreIncomingIconUris(merged.Achievements, incomingCatalog.Achievements),
                 HasCompleteCatalog = isComplete || merged.HasCompleteCatalog
             };
         }
@@ -276,6 +282,44 @@ public sealed class LocalAchievementCatalogCache
         HasCompleteCatalog = profile.HasCompleteCatalog
     };
 
+    private static IReadOnlyList<AchievementRecord> RestoreIncomingIconUris(
+        IReadOnlyList<AchievementRecord> merged,
+        IReadOnlyList<AchievementRecord> incoming)
+    {
+        var incomingByApiName = incoming
+            .Where(item => !string.IsNullOrWhiteSpace(item.ApiName))
+            .GroupBy(item => item.ApiName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var incomingByDisplayName = incoming
+            .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
+            .GroupBy(item => AchievementIdentity.NormalizeDisplayName(item.DisplayName), StringComparer.Ordinal)
+            .Where(group => group.Key.Length > 0)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
+        return merged.Select(item =>
+        {
+            AchievementRecord? source = null;
+            if (!string.IsNullOrWhiteSpace(item.ApiName)) incomingByApiName.TryGetValue(item.ApiName, out source);
+            if (source is null && !string.IsNullOrWhiteSpace(item.DisplayName))
+                incomingByDisplayName.TryGetValue(AchievementIdentity.NormalizeDisplayName(item.DisplayName), out source);
+            if (source is null) return item;
+
+            return item with
+            {
+                IconUri = PreferCachedOrIncomingIcon(item.IconUri, source.IconUri),
+                LockedIconUri = PreferCachedOrIncomingIcon(item.LockedIconUri, source.LockedIconUri)
+            };
+        }).ToArray();
+    }
+
+    private static string? PreferCachedOrIncomingIcon(string? cachedIcon, string? incomingIcon)
+    {
+        if (IsValidMetadataImageUri(cachedIcon)) return cachedIcon;
+        if (Uri.TryCreate(incomingIcon, UriKind.Absolute, out var incomingUri)
+            && incomingUri.Scheme == Uri.UriSchemeHttps) return incomingIcon;
+        return cachedIcon;
+    }
+
     private static bool HasCatalogDetails(ParsedProfile profile) => profile.Achievements.Count > 0
         && profile.Achievements.Any(achievement =>
             !string.IsNullOrWhiteSpace(achievement.DisplayName)
@@ -305,7 +349,12 @@ public sealed class LocalAchievementCatalogCache
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{appId}\n{icon}")))[..24].ToLowerInvariant();
         var relative = $"images/{key}{extension}";
         var destination = Path.Combine(Path.GetDirectoryName(imageDirectory)!, relative.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(destination)) return relative;
+        if (File.Exists(destination))
+        {
+            if (IsValidImageFile(destination)) return relative;
+            try { File.Delete(destination); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { return null; }
+        }
 
         var temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
         try
@@ -335,6 +384,8 @@ public sealed class LocalAchievementCatalogCache
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
                 output.Flush(flushToDisk: true);
             }
+
+            if (!IsValidImageFile(temporary)) return null;
 
             // Close the exclusive temporary-file handle before renaming; Windows
             // rejects moving a file that is still open with FileShare.None.
@@ -370,6 +421,39 @@ public sealed class LocalAchievementCatalogCache
         || string.Equals(host, "cdn.fastly.steamstatic.com", StringComparison.OrdinalIgnoreCase)
         || host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Checks that a cached metadata URI points to a readable image file.</summary>
+    public static bool IsValidMetadataImageUri(string? imageUri)
+    {
+        if (!AchievementIdentity.IsMetadataImageUri(imageUri)
+            || !Uri.TryCreate(imageUri, UriKind.Absolute, out var uri)) return false;
+        return IsValidImageFile(uri.LocalPath);
+    }
+
+    private static bool IsValidImageFile(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length < 12 || stream.Length > MaximumIconBytes) return false;
+            Span<byte> header = stackalloc byte[12];
+            if (stream.Read(header) < header.Length) return false;
+            return IsSupportedImageHeader(header);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                           or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsSupportedImageHeader(ReadOnlySpan<byte> header) =>
+        header.StartsWith(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A })
+        || header.StartsWith(new byte[] { 0xFF, 0xD8, 0xFF })
+        || header[..6].SequenceEqual("GIF87a"u8)
+        || header[..6].SequenceEqual("GIF89a"u8)
+        || header[..2].SequenceEqual("BM"u8)
+        || (header[..4].SequenceEqual("RIFF"u8) && header[8..12].SequenceEqual("WEBP"u8));
+
     private static IEnumerable<Uri> GetDownloadUris(Uri original)
     {
         var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { original.AbsoluteUri };
@@ -404,11 +488,11 @@ public sealed class LocalAchievementCatalogCache
             if (Uri.TryCreate(url, UriKind.Absolute, out var uri)) yield return uri;
     }
 
-    private static async Task<byte[]?> TryDownloadImageAsync(Uri uri, CancellationToken cancellationToken)
+    private async Task<byte[]?> TryDownloadImageAsync(Uri uri, CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            using var response = await _http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is <= 0 or > MaximumIconBytes) return null;
             var mediaType = response.Content.Headers.ContentType?.MediaType;
             if (mediaType is not null && !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) return null;

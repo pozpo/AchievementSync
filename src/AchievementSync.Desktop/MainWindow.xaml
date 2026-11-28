@@ -576,8 +576,8 @@
                                         </ListBox>
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
-                                        <Button Content="Backup saves" Command="{Binding BackupSavesCommand}" IsEnabled="{Binding CanBackup}" Style="{StaticResource Modern.PrimaryButton}" Padding="14,9" Margin="0,0,0,8" ToolTip="Connect GitHub first. Discovers game save files in known locations, then shows the files for confirmation before upload."/>
-                                        <Button Content="Restore from GitHub" Command="{Binding RestoreSavesCommand}" IsEnabled="{Binding CanRestore}" Style="{StaticResource Modern.SecondaryButton}" Padding="14,9" ToolTip="Connect GitHub first. Scans the selected branch even on a new PC with an empty library, then restores missing saves to their recorded paths and achievements to the local library cache. Existing files are kept."/>
+                                        <Button Content="Backup saves" Command="{Binding BackupSavesCommand}" IsEnabled="{Binding CanBackup}" Style="{StaticResource Modern.PrimaryButton}" Padding="14,9" Margin="0,0,0,8" ToolTip="Connect GitHub first. Finds saves in known and configured folders, including saves with no achievement file. Exact installed Steam title matches use AppID folders; unmatched native and emulator saves are stored independently."/>
+                                        <Button Content="Restore from GitHub" Command="{Binding RestoreSavesCommand}" IsEnabled="{Binding CanRestore}" Style="{StaticResource Modern.SecondaryButton}" Padding="14,9" ToolTip="Connect GitHub first. Scans the selected branch even on a new PC with an empty library, then restores missing saves and achievements to the paths recorded in restoration-manifest.json. Existing files are kept."/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="2">
                                         <TextBlock Text="RESTORE" Style="{StaticResource Modern.Text.Overline}"/>

@@ -1994,12 +1994,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 .ToArray();
             BackupStatus = "Scanning known save locations…";
             var titles = appMeta.ToDictionary(item => item.AppId, item => item.Title ?? string.Empty, StringComparer.Ordinal);
-            var saves = discoveredSaves ?? await SaveFileDiscoverer.DiscoverAsync(titles);
+            var sourceOptions = BuildPlatformSourceOptions();
+            foreach (var (appId, title) in SteamInstalledExecutableDiscovery.DiscoverInstalledGameTitles(sourceOptions.SteamRoot))
+                titles.TryAdd(appId, title);
+
+            IReadOnlyList<DiscoveredSaveFile> saves;
+            if (discoveredSaves is not null)
+            {
+                saves = discoveredSaves;
+            }
+            else
+            {
+                var appIdSaves = await SaveFileDiscoverer.DiscoverAsync(titles);
+                var unlinkedNativeSaves = await SaveFileDiscoverer.DiscoverUnlinkedNativeSavesAsync(titles);
+                unlinkedNativeSaves = await NativeSaveAppIdResolver.ResolveAsync(
+                    unlinkedNativeSaves,
+                    (title, cancellationToken) => SteamDbAppIdLookup.LookupExactAppIdAsync(title, cancellationToken),
+                    _settings.SteamAppIdOverrides);
+                saves = appIdSaves.Concat(unlinkedNativeSaves)
+                    .GroupBy(save => save.SourcePath, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .ToArray();
+            }
             if (onlyAppId is not null)
                 saves = saves.Where(save => string.Equals(save.AppId, onlyAppId, StringComparison.Ordinal)).ToArray();
             else if (discoveredSaves is null)
             {
-                var sourceOptions = BuildPlatformSourceOptions();
                 var platformSnapshots = new List<PlatformGameSnapshot>();
                 foreach (var adapter in _platformScanService.Adapters.Where(adapter =>
                              adapter.Platform is "xbox360" or "playstation" or "recomp" or "uplay" or "switch2" or "switch2recomp"))
@@ -2017,7 +2037,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     }
                 }
                 var platformSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync(platformSnapshots, sourceOptions);
-                saves = saves.Concat(platformSaves).ToArray();
+                saves = saves.Concat(platformSaves)
+                    .GroupBy(save => save.SourcePath, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .ToArray();
             }
             var savesByApp = saves.GroupBy(save => save.AppId, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => (IReadOnlyList<DiscoveredSaveFile>)group.ToArray(), StringComparer.Ordinal);
@@ -2028,10 +2051,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             var plans = new List<SaveBackupPlan>();
-            foreach (var (appId, _) in appMeta)
+            foreach (var (appId, appSaves) in savesByApp.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             {
-                if (!savesByApp.TryGetValue(appId, out var appSaves) || appSaves.Count == 0)
-                    continue;
+                if (!AppIdValidator.IsValid(appId)) continue;
                 var source = SaveBackupPlanner.ResolveAchievementSource(appId);
                 var appScopedSaves = appSaves.Where(save => save.BackupFolder is null).ToArray();
                 if (appScopedSaves.Length > 0)
@@ -2411,6 +2433,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _viewerDataSlots.Release();
         }
     }
+
+    public Task RefreshGameMetadataAsync(GameCardViewModel game) => LoadViewerDataAsync(game);
 
     private async Task CacheScreenshotsForGamesAsync(IReadOnlyList<string> appIds)
     {

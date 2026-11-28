@@ -91,4 +91,49 @@ public static class SteamDbAppIdLookup
 
         return null;
     }
+
+    /// <summary>Looks up a Steam AppID only when the Store search result has the exact normalized title.</summary>
+    public static async Task<string?> LookupExactAppIdAsync(string gameName, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameName)) return null;
+        try
+        {
+            var url = $"https://store.steampowered.com/api/storesearch/?term={Uri.EscapeDataString(gameName.Trim())}&cc=us&l=en";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("User-Agent", "Mozilla/5.0 AchievementSync/1.0");
+            using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(json) || JsonNode.Parse(json) is not JsonObject obj) return null;
+            var items = obj["items"] as JsonArray ?? obj["results"] as JsonArray;
+            if (items is null) return null;
+
+            var expectedTitle = NormalizeTitle(gameName);
+            var matchingIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in items.OfType<JsonObject>())
+            {
+                var returnedTitle = item["name"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(returnedTitle)
+                    || !string.Equals(NormalizeTitle(returnedTitle), expectedTitle, StringComparison.Ordinal)) continue;
+                var idNode = item["id"] ?? item["appid"] ?? item["app_id"];
+                if (idNode is JsonValue value)
+                {
+                    if (value.TryGetValue(out int numericId) && numericId > 0) matchingIds.Add(numericId.ToString());
+                    if (value.TryGetValue(out string? textId) && int.TryParse(textId, out var parsedId) && parsedId > 0)
+                        matchingIds.Add(parsedId.ToString());
+                }
+            }
+            return matchingIds.Count == 1 ? matchingIds.Single() : null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException
+                                           or OperationCanceledException or InvalidOperationException)
+        {
+            // A network lookup is optional; callers keep the save under its portable native folder when unavailable.
+        }
+
+        return null;
+    }
+
+    private static string NormalizeTitle(string value) =>
+        new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 }

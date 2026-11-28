@@ -21,10 +21,13 @@ public sealed record BulkSyncResult(
     {
         get
         {
+            var manifestsPushed = Entries.Any(entry => entry.Action == "pushed"
+                && entry.Detail.Contains("restoration-manifest.json", StringComparison.OrdinalIgnoreCase));
             var pushedText = AchievementFilesPushed > 0
                 ? $"{AchievementFilesPushed:N0} file(s)"
-                : "nothing new to upload";
+                : manifestsPushed ? "restoration manifest updated" : "nothing new to upload";
             var parts = new List<string> { pushedText };
+            if (AchievementFilesPushed > 0 && manifestsPushed) parts.Add("restoration manifest updated");
             if (AchievementFilesUnchanged > 0) parts.Add($"{AchievementFilesUnchanged:N0} already up to date");
             if (AchievementFilesFailed > 0) parts.Add($"{AchievementFilesFailed:N0} failed");
             return string.Join(" · ", parts);

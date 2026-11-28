@@ -12,7 +12,8 @@ public sealed record DiscoveredSaveFile(
     long Size,
     string Sha256,
     string RepoPath,
-    string? BackupFolder = null);
+    string? BackupFolder = null,
+    string? GameTitle = null);
 
 /// <summary>Progress snapshot for the save-backup upload pipeline. FilesProcessed/FilesTotal span the whole batch; BytesProcessed/BytesTotal likewise. Stage is a short human-readable hint.</summary>
 public readonly record struct SaveBackupProgress(

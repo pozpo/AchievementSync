@@ -25,11 +25,13 @@ public partial class GameDetailsWindow : Window
     private readonly ICollectionView _view;
     private readonly GameCardViewModel _game;
     private readonly ObservableCollection<AchievementRow> _rows;
+    private readonly Func<Task>? _refreshCatalogAsync;
     private string _filter = "All";
 
-    public GameDetailsWindow(GameCardViewModel game)
+    public GameDetailsWindow(GameCardViewModel game, Func<Task>? refreshCatalogAsync = null)
     {
         _game = game ?? throw new ArgumentNullException(nameof(game));
+        _refreshCatalogAsync = refreshCatalogAsync;
         InitializeComponent();
         SourceInitialized += (_, _) => WindowAppearance.Apply(new WindowInteropHelper(this).Handle);
         GameTitle.Text = game.Title;
@@ -78,6 +80,15 @@ public partial class GameDetailsWindow : Window
         if (profile.Achievements.Count == 0) return;
         try
         {
+            var missingCachedArtwork = HasMissingCachedArtwork(profile);
+            if (missingCachedArtwork && _refreshCatalogAsync is not null)
+            {
+                // Prefer the configured full viewer catalog before falling back to Steam's partial public page.
+                await _refreshCatalogAsync();
+                profile = _game.Profile;
+                missingCachedArtwork = HasMissingCachedArtwork(profile);
+            }
+
             var catalog = new ParsedProfile(
                 profile.AppId,
                 "Game details achievement catalog",
@@ -91,12 +102,46 @@ public partial class GameDetailsWindow : Window
             var imageDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "AchievementSync", "Metadata", profile.AppId, "images");
             var imageCount = Directory.Exists(imageDirectory) ? Directory.EnumerateFiles(imageDirectory).Count() : 0;
+
+            if (missingCachedArtwork && AppIdValidator.IsValid(profile.AppId))
+            {
+                // A profile can still be in memory after Metadata/<AppID>/images was removed.
+                // Its old file:// URIs cannot be copied back, so fetch the public Steam catalog again.
+                var community = await new SteamCommunityCatalogClient().GetCatalogAsync(profile.AppId, _game.Title);
+                if (community is not null)
+                {
+                    var refreshed = await new LocalAchievementCatalogCache().CacheCatalogAsync(
+                        profile.AppId,
+                        community.Catalog,
+                        source: "steam-community",
+                        declaredTotal: community.DeclaredTotal);
+                    if (refreshed is not null) _game.ApplyCatalog(refreshed);
+                    imageCount = Directory.Exists(imageDirectory) ? Directory.EnumerateFiles(imageDirectory).Count() : 0;
+                }
+            }
+
             AppLog.Info($"Achievement icons checked for AppID {profile.AppId}; images={imageCount}.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or HttpRequestException
                                            or JsonException or TaskCanceledException or InvalidDataException or NotSupportedException)
         {
             AppLog.Warning($"Could not cache achievement icons for AppID {profile.AppId}: {exception.GetType().Name}.");
+        }
+    }
+
+    private static bool HasMissingCachedArtwork(GameProfile profile) => profile.Achievements.Any(achievement =>
+        (string.IsNullOrWhiteSpace(achievement.IconUri) && string.IsNullOrWhiteSpace(achievement.LockedIconUri))
+        || IsMissingMetadataArtwork(achievement.IconUri)
+        || IsMissingMetadataArtwork(achievement.LockedIconUri));
+
+    private static bool IsMissingMetadataArtwork(string? iconUri)
+    {
+        if (!AchievementIdentity.IsMetadataImageUri(iconUri)
+            || !Uri.TryCreate(iconUri, UriKind.Absolute, out var uri)) return false;
+        try { return !File.Exists(uri.LocalPath); }
+        catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException)
+        {
+            return true;
         }
     }
 

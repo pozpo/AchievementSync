@@ -254,6 +254,7 @@ public sealed partial class AchievementEnablerControl : WpfUserControl, System.C
         new(EnablerTarget.SteamColdClient, "Steam ColdClient (standalone launcher + generated catalog)"),
         new(EnablerTarget.UplayR2, "Ubisoft Connect R2 emulator"),
         new(EnablerTarget.UplayR1, "Ubisoft Connect R1 emulator"),
+        new(EnablerTarget.UplayLumaPlay, "Ubisoft LumaPlay (x86 / x64 runtime)"),
         new(EnablerTarget.EpicEmulator, "Epic Games (Nemirtingas emulator)"),
         new(EnablerTarget.GogUniverseLan, "GOG (UniverseLAN)"),
         new(EnablerTarget.EaOrigin, "EA / Origin emulator"),

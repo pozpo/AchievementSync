@@ -35,10 +35,9 @@ public sealed class AppSettings
     // User-configured Steam AppID overrides and platform blacklist
     public Dictionary<string, string> SteamAppIdOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> PlatformBlacklist { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    // User-configured client IDs for official Entra / Epic sign-in
+    // User-configured Microsoft Entra public-client ID for Xbox sign-in.
     public string XboxClientId { get; set; } = string.Empty;
-    public string EpicClientId { get; set; } = string.Empty;
-    public bool LumaPlayWatcherEnabled { get; set; } = true;
+    public bool LumaPlayWatcherEnabled { get; set; }
     // Platform login secrets are held in Windows Credential Manager. Keep only the RA account name here.
     public string RetroAchievementsUser { get; set; } = string.Empty;
     [JsonPropertyName("RetroAchievementsApiKey")]

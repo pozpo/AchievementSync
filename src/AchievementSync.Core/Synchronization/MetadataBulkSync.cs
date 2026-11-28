@@ -6,7 +6,7 @@ namespace AchievementSync.Core.Synchronization;
 /// <summary>One per-AppID outcome for the bulk sync report.</summary>
 public sealed record BulkSyncEntry(string AppId, string Action, string Detail);
 
-/// <summary>Aggregate result of a bulk metadata push (achievement JSON files only).</summary>
+/// <summary>Aggregate result of a bulk push of achievement JSON and viewer marker files.</summary>
 public sealed record BulkSyncResult(
     bool Pushed,
     string? CommitUrl,
@@ -22,7 +22,7 @@ public sealed record BulkSyncResult(
         get
         {
             var pushedText = AchievementFilesPushed > 0
-                ? $"{AchievementFilesPushed:N0} achievement file(s)"
+                ? $"{AchievementFilesPushed:N0} file(s)"
                 : "nothing new to upload";
             var parts = new List<string> { pushedText };
             if (AchievementFilesUnchanged > 0) parts.Add($"{AchievementFilesUnchanged:N0} already up to date");

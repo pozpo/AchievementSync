@@ -1,35 +1,32 @@
-# Build output
+# .NET build and publish output
 **/bin/
 **/obj/
-**/Debug/
-**/Release/
 **/publish/
-
-# Test results and logs
 **/TestResults/
-*.log
+**/artifacts/
 
-# Visual Studio
+# IDE state
 .vs/
+.idea/
 *.suo
 *.user
 *.userosscache
 *.sln.docstates
-
-# JetBrains Rider
-.idea/
 *.sln.iml
 
-# Temporary files
+# Local logs and temporary files
+*.log
 *.tmp
 *.temp
+*.new
 
-# Windows and macOS metadata
+# Operating-system metadata
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
 
-# Local release artifacts (project root only)
+# Local release binaries and archives
 /AchievementSync.exe
+/AchievementSync.exe.new
 /AchievementSync.zip

@@ -17,6 +17,7 @@ public static class AchievementExportPlanner
         foreach (var game in games.OrderBy(game => game.AppId, StringComparer.Ordinal))
         {
             if (string.IsNullOrWhiteSpace(game.AppId) || !game.AppId.All(char.IsAsciiDigit)) continue;
+            if (game.UnlockedCount == 0) continue;
 
             var known = game.Achievements
                 .Where(item => item.IsUnlocked.HasValue)
@@ -97,7 +98,6 @@ public static class AchievementExportPlanner
             }
 
             // 2. Union all achievements from all resolutions in this AppID group
-            var nonSteamPlatforms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var isBlacklisted = false;
 
             foreach (var resolution in group)
@@ -105,12 +105,7 @@ public static class AchievementExportPlanner
                 if (resolution.IsBlacklisted)
                     isBlacklisted = true;
 
-                if (!string.Equals(resolution.Platform, "steam", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(resolution.Platform))
-                {
-                    nonSteamPlatforms.Add(resolution.Platform.Trim());
-                }
-
-                foreach (var ach in resolution.NormalizedAchievements)
+                foreach (var ach in resolution.NormalizedAchievements.Where(item => item.EarnedKnown))
                 {
                     if (string.IsNullOrWhiteSpace(ach.Id)) continue;
 
@@ -150,9 +145,14 @@ public static class AchievementExportPlanner
             // 3. Platform marker files for non-Steam sources: <Platform>.platform
             if (includePlatformMarkers)
             {
-                foreach (var platform in nonSteamPlatforms.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+                foreach (var resolution in group
+                             .Where(item => !string.Equals(item.Platform, "steam", StringComparison.OrdinalIgnoreCase)
+                                            && !string.IsNullOrWhiteSpace(item.Platform))
+                             .GroupBy(item => GetMarkerPlatform(item.Platform, item.SourceVersion), StringComparer.OrdinalIgnoreCase)
+                             .Select(item => item.Key)
+                             .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
                 {
-                    var markerName = FormatPlatformMarkerName(platform);
+                    var markerName = FormatPlatformMarkerName(resolution);
                     files.Add(new AchievementExportFile(
                         $"AppID/{appId}/{markerName}.platform",
                         appId,
@@ -186,10 +186,22 @@ public static class AchievementExportPlanner
         "gog" => "GOG",
         "retroachievements" or "ra" => "RetroAchievements",
         "recomp" or "ladxhd" => "Recomp",
+        "ps3recomp" => "PS3Recomp",
+        "ps4recomp" => "PS4Recomp",
+        "ladxhd-recomp" => "LADXHD",
         "xenia" or "xbox360" => "Xbox360",
         "gfwl" => "GFWL",
         _ => platform.Length > 0 ? char.ToUpperInvariant(platform[0]) + platform[1..] : "Unknown"
     };
+
+    private static string GetMarkerPlatform(string platform, string? sourceVersion) =>
+        sourceVersion?.Trim().ToLowerInvariant() switch
+        {
+            "ps3recomp" => "ps3recomp",
+            "ps4recomp" => "ps4recomp",
+            "ladxhd" => "ladxhd-recomp",
+            _ => platform
+        };
 
     private sealed record ViewerAchievementState(
         [property: JsonPropertyName("earned")] bool Earned,

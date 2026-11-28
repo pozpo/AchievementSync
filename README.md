@@ -119,7 +119,7 @@ dotnet build AchievementSync.sln --configuration Release
 dotnet test tests/AchievementSync.SmokeTests/AchievementSync.SmokeTests.csproj --configuration Release
 ```
 
-To publish a portable single-file executable:
+To publish the self-contained Windows x64 app as one executable (no runtime installation or script sidecars required):
 
 ```powershell
 dotnet publish src/AchievementSync.Desktop/AchievementSync.Desktop.csproj `
@@ -128,8 +128,11 @@ dotnet publish src/AchievementSync.Desktop/AchievementSync.Desktop.csproj `
   --self-contained true `
   -p:PublishSingleFile=true `
   -p:IncludeNativeLibrariesForSelfExtract=true `
-  -o output
+  -p:DebugType=embedded `
+  -o output\win-x64
 ```
+
+The publish directory contains `AchievementSync.exe` only. The app does not need a separate .NET runtime, Python installation, or script sidecars to start.
 
 ---
 

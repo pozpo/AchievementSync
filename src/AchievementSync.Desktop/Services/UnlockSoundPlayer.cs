@@ -17,6 +17,7 @@ internal static class UnlockSoundPlayer
     internal const string AchievementSync = "AchievementSync";
     internal const string SoftTick = "SoftTick";
     internal const string VictoryArpeggio = "VictoryArpeggio";
+    internal const string EpicGames = "EpicGames";
     internal const string Custom = "Custom";
 
     [DllImport("winmm.dll", SetLastError = true, CharSet = CharSet.Auto)]
@@ -53,6 +54,7 @@ internal static class UnlockSoundPlayer
     {
         var kind = string.Equals(sound, SoftTick, StringComparison.OrdinalIgnoreCase) ? SoftTick
             : string.Equals(sound, VictoryArpeggio, StringComparison.OrdinalIgnoreCase) ? VictoryArpeggio
+            : string.Equals(sound, EpicGames, StringComparison.OrdinalIgnoreCase) ? EpicGames
             : string.Equals(sound, Custom, StringComparison.OrdinalIgnoreCase) ? Custom
             : AchievementSync;
         if (kind == Custom)
@@ -133,6 +135,7 @@ internal static class UnlockSoundPlayer
             {
                 SoftTick => "achievement-tick.wav",
                 VictoryArpeggio => "achievement-arpeggio.wav",
+                EpicGames => "epic-games-achievement-sound.wav",
                 _ => "achievement-unlock.wav",
             };
             var destination = Path.Combine(AppDataDirectory, Path.ChangeExtension(resourceName, ".wav"));

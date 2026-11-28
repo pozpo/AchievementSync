@@ -137,27 +137,21 @@ public sealed class GogDataAdapter(PlatformSourceOptions? defaults = null) : Pla
     };
 }
 
-/// <summary>Epic Games reader. Combines local emulator progress with the official public achievement
-/// catalog and rarity endpoint. Public catalog rows are marked as unknown until local progress exists.</summary>
-public sealed class EpicDataAdapter(PlatformSourceOptions? defaults = null, HttpClient? httpClient = null)
-    : PlatformDataAdapter("epic", "Epic Games Store (local state + official API)")
+/// <summary>Reads local Epic emulator achievement state. Epic's documented public services do not provide a
+/// general account-wide store library or achievement-progress API, so this adapter does not call undocumented endpoints.</summary>
+public sealed class EpicDataAdapter(PlatformSourceOptions? defaults = null)
+    : PlatformDataAdapter("epic", "Epic Games (local emulator data)")
 {
     private readonly PlatformSourceOptions _defaults = defaults ?? PlatformSourceOptions.CreateDefault();
-    private readonly HttpClient? _httpClient = httpClient;
 
     public override bool IsConfigured => IsConfiguredFor(_defaults);
 
-    public override bool IsConfiguredFor(PlatformSourceOptions options)
-    {
-        return !string.IsNullOrWhiteSpace(options.EpicAccessToken)
-               || LocalRoots(options).Any(Directory.Exists)
-               || ManifestRoots(options).Any(Directory.Exists);
-    }
+    public override bool IsConfiguredFor(PlatformSourceOptions options) => LocalRoots(options).Any(Directory.Exists);
 
     public override string? ConfigurationHint =>
-        "Uses Epic Launcher manifests and the public achievements catalog. Optionally connect an Epic Developer Portal client in Platforms to query authenticated player progress.";
+        "Reads local NemirtingasEpicEmu achievements.json files and any custom Epic root. Account-wide cloud library/progress import is not available through Epic's documented public APIs.";
 
-    public override async Task<PlatformCollectResult> CollectAsync(PlatformSourceOptions options, CancellationToken cancellationToken = default)
+    public override Task<PlatformCollectResult> CollectAsync(PlatformSourceOptions options, CancellationToken cancellationToken = default)
     {
         var messages = new List<string>();
         var games = new SortedDictionary<string, PlatformGameSnapshot>(StringComparer.OrdinalIgnoreCase);
@@ -181,45 +175,8 @@ public sealed class EpicDataAdapter(PlatformSourceOptions? defaults = null, Http
             }
         }
 
-        if (_httpClient is not null)
-        {
-            var manifestGames = ManifestRoots(options)
-                .Where(Directory.Exists)
-                .SelectMany(root => Enumerate(root, "*.item", 5))
-                .Select(TryReadManifest)
-                .Where(item => item is not null)
-                .Cast<EpicInstalledGame>()
-                .ToList();
-            manifestGames.AddRange(ReadLauncherInstalledDat());
-
-            var installations = manifestGames
-                .GroupBy(item => item.CatalogItemId ?? item.AppName, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .Take(500)
-                .ToArray();
-            using var slots = new SemaphoreSlim(3, 3);
-            var tasks = installations.Select(async installation =>
-            {
-                await slots.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    var snapshot = await FetchPublicSchemaAsync(installation, options, games, cancellationToken).ConfigureAwait(false);
-                    return (Installation: installation, Snapshot: snapshot);
-                }
-                catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidDataException)
-                {
-                    lock (messages) messages.Add($"Epic: achievement lookup failed for {installation.DisplayName ?? installation.AppName} ({exception.GetType().Name}).");
-                    return (Installation: installation, Snapshot: (PlatformGameSnapshot?)null);
-                }
-                finally { slots.Release(); }
-            }).ToArray();
-
-            foreach (var result in await Task.WhenAll(tasks).ConfigureAwait(false))
-                if (result.Snapshot is { } snapshot) games[snapshot.GameId] = snapshot;
-        }
-
-        if (games.Count == 0) messages.Add("No local Epic achievement file was found.");
-        return new PlatformCollectResult(Platform, games.Values.ToList(), messages);
+        if (games.Count == 0) messages.Add("No local Epic emulator achievements.json file was found.");
+        return Task.FromResult(new PlatformCollectResult(Platform, games.Values.ToList(), messages));
     }
 
     private static IEnumerable<string> LocalRoots(PlatformSourceOptions options)
@@ -230,247 +187,6 @@ public sealed class EpicDataAdapter(PlatformSourceOptions? defaults = null, Http
             .Select(path => Path.GetFullPath(path!))
             .Distinct(StringComparer.OrdinalIgnoreCase);
     }
-
-    private static IEnumerable<string> ManifestRoots(PlatformSourceOptions options)
-    {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        var roots = new List<string>();
-        if (!string.IsNullOrWhiteSpace(options.EpicRoot)) roots.Add(options.EpicRoot);
-        roots.Add(Path.Combine(programData, "Epic", "EpicGamesLauncher"));
-        roots.Add(Path.Combine(local, "EpicGamesLauncher"));
-        foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var full = Path.GetFullPath(root);
-            yield return string.Equals(Path.GetFileName(full), "Manifests", StringComparison.OrdinalIgnoreCase)
-                ? full
-                : Path.Combine(full, "Data", "Manifests");
-        }
-    }
-
-    private static IEnumerable<EpicInstalledGame> ReadLauncherInstalledDat()
-    {
-        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        var datPath = Path.Combine(programData, "Epic", "UnrealEngineLauncher", "LauncherInstalled.dat");
-        if (!File.Exists(datPath)) yield break;
-        System.Text.Json.JsonDocument? document = null;
-        try
-        {
-            document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(datPath));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        {
-            yield break;
-        }
-
-        using (document)
-        {
-            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
-                || !document.RootElement.TryGetProperty("InstallationList", out var list)
-                || list.ValueKind != System.Text.Json.JsonValueKind.Array)
-                yield break;
-
-            foreach (var item in list.EnumerateArray())
-            {
-                if (item.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
-                var appName = ReadString(item, "AppName");
-                var ns = ReadString(item, "NamespaceId");
-                var catalogItemId = ReadString(item, "ArtifactId") ?? appName;
-                if (string.IsNullOrWhiteSpace(appName) && string.IsNullOrWhiteSpace(ns)) continue;
-                yield return new EpicInstalledGame(datPath, catalogItemId, appName, appName, ns);
-            }
-        }
-    }
-
-    private async Task<PlatformGameSnapshot?> FetchPublicSchemaAsync(EpicInstalledGame installation,
-        PlatformSourceOptions options,
-        IReadOnlyDictionary<string, PlatformGameSnapshot> localGames, CancellationToken cancellationToken)
-    {
-        foreach (var productId in new[] { installation.Namespace, installation.CatalogItemId, installation.AppName }
-                     .Where(value => !string.IsNullOrWhiteSpace(value))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var url = $"https://api.epicgames.dev/epic/achievements/v1/public/achievements/product/{Uri.EscapeDataString(productId!)}/locale/en?includeAchievements=true";
-            using var response = await SendGetWithRateLimitAsync(url, bearerToken: null, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) continue;
-            using var document = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
-            if (!document.RootElement.TryGetProperty("achievements", out var rows)
-                || rows.ValueKind != System.Text.Json.JsonValueKind.Array || rows.GetArrayLength() == 0) continue;
-
-            var gameId = installation.CatalogItemId ?? installation.AppName ?? productId!;
-            var local = FindLocalGame(localGames, installation, gameId);
-            var localById = (local?.Achievements ?? [])
-                .GroupBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
-
-            var officialStates = !string.IsNullOrWhiteSpace(options.EpicAccessToken)
-                                 && !string.IsNullOrWhiteSpace(options.EpicAccountId)
-                ? await FetchOfficialPlayerProgressAsync(options.EpicAccessToken!, options.EpicAccountId!, productId!, cancellationToken).ConfigureAwait(false)
-                : null;
-
-            var achievements = new Dictionary<string, PlatformAchievement>(StringComparer.OrdinalIgnoreCase);
-            foreach (var row in rows.EnumerateArray())
-            {
-                var entry = row.TryGetProperty("achievement", out var nested) && nested.ValueKind == System.Text.Json.JsonValueKind.Object
-                    ? nested : row;
-                var id = ReadString(entry, "name", "id", "apiName", "api_name");
-                if (string.IsNullOrWhiteSpace(id)) continue;
-                var remote = new PlatformAchievement(
-                    id,
-                    ReadString(entry, "lockedDisplayName", "unlockedDisplayName", "displayName", "name"),
-                    ReadString(entry, "lockedDescription", "unlockedDescription", "lockedDesc", "description"),
-                    EarnedKnown: false,
-                    IconPath: ReadString(entry, "unlockedIconLink", "unlockedIcon", "icon"),
-                    IconGrayPath: ReadString(entry, "lockedIconLink", "lockedIcon", "iconGray"),
-                    RarityPercent: ReadRarity(entry, row),
-                    Hidden: ReadBool(entry, "hidden"));
-
-                if (officialStates is not null && officialStates.TryGetValue(id, out var apiState))
-                {
-                    remote = remote with
-                    {
-                        Earned = apiState.Earned,
-                        EarnedKnown = true,
-                        EarnedTimeUnix = apiState.EarnedTimeUnix
-                    };
-                }
-                if (localById.TryGetValue(id, out var state))
-                {
-                    var earned = (remote.EarnedKnown && remote.Earned) || (state.EarnedKnown && state.Earned);
-                    remote = remote with
-                    {
-                        Earned = earned,
-                        EarnedKnown = remote.EarnedKnown || state.EarnedKnown,
-                        EarnedTimeUnix = earned ? Math.Max(remote.EarnedTimeUnix, SteamAppIdResolver.NormalizeUnixSeconds(state.EarnedTimeUnix)) : 0
-                    };
-                }
-                achievements[id] = remote;
-            }
-
-            foreach (var localAchievement in local?.Achievements ?? [])
-                if (!achievements.ContainsKey(localAchievement.Id)) achievements[localAchievement.Id] = localAchievement;
-
-            if (achievements.Count == 0) continue;
-            var source = local?.SourcePath ?? installation.ManifestPath;
-            return new PlatformGameSnapshot(Platform, gameId, installation.DisplayName, source,
-                achievements.Values.ToArray(), officialStates is { Count: > 0 } ? "epic-official-api" : "epic-public-api");
-        }
-
-        return null;
-    }
-
-    private async Task<Dictionary<string, PlatformAchievement>?> FetchOfficialPlayerProgressAsync(
-        string accessToken,
-        string accountId,
-        string productId,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var url = $"https://api.epicgames.dev/epic/achievements/v1/players/{Uri.EscapeDataString(accountId)}/achievements/product/{Uri.EscapeDataString(productId)}?locale=en";
-            using var response = await SendGetWithRateLimitAsync(url, accessToken, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) return null;
-            using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
-            if (!doc.RootElement.TryGetProperty("achievements", out var arr)
-                || arr.ValueKind != System.Text.Json.JsonValueKind.Array)
-                return null;
-
-            var states = new Dictionary<string, PlatformAchievement>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in arr.EnumerateArray())
-            {
-                if (entry.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
-                var id = ReadString(entry, "name", "achievementId", "id");
-                if (string.IsNullOrWhiteSpace(id)) continue;
-                var unlocked = ReadBool(entry, "unlocked") || ReadBool(entry, "earned");
-                var unlockTimeStr = ReadString(entry, "unlockTime", "dateUnlocked", "earnedAt");
-                var unlockTime = unlocked ? SteamAppIdResolver.NormalizeUnixSeconds(unlockTimeStr) : 0L;
-                states[id] = new PlatformAchievement(id, Earned: unlocked, EarnedTimeUnix: unlockTime, EarnedKnown: true);
-            }
-            return states;
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
-        {
-            return null;
-        }
-    }
-
-    private async Task<HttpResponseMessage> SendGetWithRateLimitAsync(
-        string url,
-        string? bearerToken,
-        CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; attempt < 2; attempt++)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-            if (!string.IsNullOrWhiteSpace(bearerToken))
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
-
-            var response = await _httpClient!.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests && attempt == 0)
-            {
-                var delay = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(2);
-                if (delay > TimeSpan.FromSeconds(15)) delay = TimeSpan.FromSeconds(15);
-                response.Dispose();
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-            return response;
-        }
-
-        throw new HttpRequestException("Epic API rate limit exceeded.");
-    }
-
-    private static PlatformGameSnapshot? FindLocalGame(IReadOnlyDictionary<string, PlatformGameSnapshot> localGames,
-        EpicInstalledGame installation, string gameId)
-    {
-        foreach (var key in new[] { gameId, installation.AppName, installation.CatalogItemId, installation.Namespace })
-            if (!string.IsNullOrWhiteSpace(key) && localGames.TryGetValue(key, out var match)) return match;
-        return null;
-    }
-
-    private static EpicInstalledGame? TryReadManifest(string path)
-    {
-        try
-        {
-            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
-            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
-            var root = document.RootElement;
-            var catalogItemId = ReadString(root, "CatalogItemId", "catalogItemId");
-            var appName = ReadString(root, "AppName", "appName");
-            if (string.IsNullOrWhiteSpace(catalogItemId) && string.IsNullOrWhiteSpace(appName)) return null;
-            return new EpicInstalledGame(path, catalogItemId, appName,
-                ReadString(root, "DisplayName", "displayName", "LaunchExecutable", "launchExecutable"),
-                ReadString(root, "CatalogNamespace", "Namespace", "namespace"));
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        {
-            return null;
-        }
-    }
-
-    private static string? ReadString(System.Text.Json.JsonElement element, params string[] names)
-    {
-        foreach (var name in names)
-            if (element.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(value.GetString())) return value.GetString()!.Trim();
-        return null;
-    }
-
-    private static double? ReadRarity(System.Text.Json.JsonElement achievement, System.Text.Json.JsonElement wrapper)
-    {
-        foreach (var element in new[] { achievement, wrapper })
-            if (element.TryGetProperty("rarity", out var rarity) && rarity.ValueKind == System.Text.Json.JsonValueKind.Object
-                && rarity.TryGetProperty("percent", out var percent) && percent.TryGetDouble(out var value)
-                && value is >= 0 and <= 100) return value;
-        return null;
-    }
-
-    private static bool ReadBool(System.Text.Json.JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.True;
-
-    private sealed record EpicInstalledGame(string ManifestPath, string? CatalogItemId, string? AppName,
-        string? DisplayName, string? Namespace);
 
     private static string? NearestDirectory(string file)
     {
@@ -529,7 +245,7 @@ public sealed class UplayDataAdapter(PlatformSourceOptions? defaults = null) : P
         SpoolRoots(options).Any(Directory.Exists)
         || CacheRoots(options).Any(Directory.Exists)
         || (!string.IsNullOrWhiteSpace(options.UplayRuneRoot) && Directory.Exists(options.UplayRuneRoot))
-        || (options.LumaPlayWatcherEnabled && OperatingSystem.IsWindows());
+        || (options.LumaPlayWatcherEnabled && OperatingSystem.IsWindows() && LumaPlayRegistryReader.ReadAll().Count > 0);
 
     public override string? ConfigurationHint =>
         "Sign in to Ubisoft Connect (%LOCALAPPDATA%\\Ubisoft Game Launcher\\spool), or optionally point RUNE Ubisoft Connect to its folder.";

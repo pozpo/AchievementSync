@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -33,7 +34,7 @@ public sealed class RecompDataAdapter(PlatformSourceOptions? defaults = null)
         || Directory.Exists(DefaultLadxhdSaveRoot());
 
     public override string? ConfigurationHint =>
-        "Add a LADXHD, PS3Recomp, or PS4 Recomp installation folder on Platforms to import its schema and unlock logs.";
+        "Add the port folder. Reads LADXHD/PS3Recomp data and PS4 TROPHY.TRP/npbind.dat or decrypted XML/JSON; follows static game_dir/game_path settings, local icons, and logs without running launcher scripts.";
 
     private static string DefaultLadxhdSaveRoot() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Zelda_LA", "achievements");
@@ -314,29 +315,82 @@ public sealed class RecompDataAdapter(PlatformSourceOptions? defaults = null)
             cancellationToken.ThrowIfCancellationRequested();
             var portDir = Path.GetDirectoryName(marker)!;
             var portName = Path.GetFileName(portDir);
-            var schema = new Dictionary<string, PlatformAchievement>(StringComparer.OrdinalIgnoreCase);
+            var fallbackGameId = InferPs4RecompId(portDir, portName);
+            var sourceRoots = new[] { portDir }
+                .Concat(DiscoverPs4GameDataRoots(portDir))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var byGame = new Dictionary<string, Dictionary<string, PlatformAchievement>>(StringComparer.OrdinalIgnoreCase);
+            var titlesByGame = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var iconFiles = sourceRoots.SelectMany(sourceRoot => SafeEnumerateFiles(sourceRoot, "TROP*.PNG", 5)
+                    .Concat(SafeEnumerateFiles(sourceRoot, "TROP*.png", 5)))
+                .Select(path => (Name: Path.GetFileName(path), Path: path))
+                .Where(item => !string.IsNullOrWhiteSpace(item.Name))
+                .GroupBy(item => item.Name!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().Path, StringComparer.OrdinalIgnoreCase);
 
-            foreach (var xmlDir in SafeEnumerateDirs(portDir, "Xml", 4))
+            foreach (var xmlDir in sourceRoots.SelectMany(sourceRoot => SafeEnumerateDirs(sourceRoot, "Xml", 4))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
             {
+                var gameId = InferPs4RecompId(xmlDir, fallbackGameId);
+                if (!byGame.TryGetValue(gameId, out var schema))
+                    byGame[gameId] = schema = new Dictionary<string, PlatformAchievement>(StringComparer.OrdinalIgnoreCase);
                 foreach (var item in PlayStationDataAdapter.ReadPs4TrophyXmlDirectory(xmlDir))
-                    Upsert(schema, item);
+                {
+                    var iconName = int.TryParse(item.Id, out var trophyId) ? $"TROP{trophyId:000}.PNG" : string.Empty;
+                    var grayIconName = int.TryParse(item.Id, out trophyId) ? $"TROP{trophyId:000}_G.PNG" : string.Empty;
+                    var icon = iconFiles.GetValueOrDefault(iconName);
+                    var grayIcon = iconFiles.GetValueOrDefault(grayIconName);
+                    Upsert(schema, item with
+                    {
+                        IconPath = item.IconPath ?? icon,
+                        IconGrayPath = item.IconGrayPath ?? grayIcon
+                    });
+                }
             }
-            foreach (var jsonFile in SafeEnumerateFiles(portDir, "*troph*.json", 3))
+            foreach (var jsonFile in sourceRoots.SelectMany(sourceRoot => SafeEnumerateFiles(sourceRoot, "*troph*.json", 3))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
             {
+                var gameId = InferPs4RecompId(jsonFile, fallbackGameId);
+                if (!byGame.TryGetValue(gameId, out var schema))
+                    byGame[gameId] = schema = new Dictionary<string, PlatformAchievement>(StringComparer.OrdinalIgnoreCase);
                 foreach (var item in ParseGenericAchievementJson(jsonFile))
                     Upsert(schema, item);
             }
 
-            string? logSource = null;
+            var logsByGame = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var logFile in SafeEnumerateFiles(portDir, "*.log", 3))
             {
                 try
                 {
-                    logSource ??= logFile;
-                    foreach (var unlocked in ParsePs4LauncherLog(File.ReadLines(logFile)))
+                    var lines = File.ReadLines(logFile).ToArray();
+                    var explicitGameId = InferPs4RecompId(string.Join("\n", lines), string.Empty);
+                    if (string.IsNullOrWhiteSpace(explicitGameId) && byGame.Count > 1)
                     {
+                        messages.Add($"PS4 Recomp: skipped ambiguous launcher log {Path.GetFileName(logFile)} because it does not identify one trophy list.");
+                        continue;
+                    }
+                    var gameId = !string.IsNullOrWhiteSpace(explicitGameId)
+                        ? explicitGameId
+                        : byGame.Count == 1 ? byGame.Keys.First() : string.Empty;
+                    if (byGame.Count == 0 || !byGame.TryGetValue(gameId, out var schema))
+                    {
+                        messages.Add($"PS4 Recomp: skipped launcher log {Path.GetFileName(logFile)} because no matching trophy schema was found.");
+                        continue;
+                    }
+                    logsByGame.TryAdd(gameId, logFile);
+                    var unknownUnlocks = 0;
+                    foreach (var unlocked in ParsePs4LauncherLog(lines))
+                    {
+                        if (!schema.ContainsKey(unlocked.Id))
+                        {
+                            unknownUnlocks++;
+                            continue;
+                        }
                         Upsert(schema, unlocked);
                     }
+                    if (unknownUnlocks > 0)
+                        messages.Add($"PS4 Recomp: ignored {unknownUnlocks} launcher unlock(s) that were absent from the trophy schema.");
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -344,16 +398,45 @@ public sealed class RecompDataAdapter(PlatformSourceOptions? defaults = null)
                 }
             }
 
-            if (schema.Count > 0)
+            foreach (var sourceRoot in sourceRoots)
+            foreach (var archiveFile in SafeEnumerateFiles(sourceRoot, "*.trp", 5)
+                         .Where(path => Regex.IsMatch(Path.GetFileName(path), @"^trophy\d{2}\.trp$", RegexOptions.IgnoreCase)))
             {
-                var gameId = InferPs4RecompId(portDir, portName);
-                games[gameId] = new PlatformGameSnapshot(
-                    "recomp",
-                    gameId,
-                    portName,
-                    logSource ?? portDir,
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var bindingFile = FindNearestPs4File(Path.GetDirectoryName(archiveFile)!, "npbind.dat", sourceRoot, 6);
+                    var keyFile = FindNearestPs4File(portDir, "trophy.key", portDir, 1)
+                        ?? FindNearestPs4File(Path.GetDirectoryName(archiveFile)!, "trophy.key", sourceRoot, 6);
+                    var trophyArchive = Ps4TrophyArchiveReader.Read(archiveFile, bindingFile, keyFile);
+                    var inferredId = InferPs4RecompId(archiveFile, string.Empty);
+                    var gameId = !string.IsNullOrWhiteSpace(inferredId)
+                        ? inferredId
+                        : !string.IsNullOrWhiteSpace(trophyArchive.NpCommunicationId)
+                            ? trophyArchive.NpCommunicationId
+                            : fallbackGameId;
+                    if (!byGame.TryGetValue(gameId, out var schema))
+                        byGame[gameId] = schema = new Dictionary<string, PlatformAchievement>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var item in trophyArchive.Achievements) Upsert(schema, item);
+                    if (!string.IsNullOrWhiteSpace(trophyArchive.Title)) titlesByGame[gameId] = trophyArchive.Title;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or CryptographicException)
+                {
+                    messages.Add($"PS4 Recomp: skipped {Path.GetFileName(archiveFile)} ({ex.GetType().Name}).");
+                }
+            }
+
+            foreach (var (gameId, schema) in byGame)
+            {
+                if (schema.Count == 0) continue;
+                var snapshot = new PlatformGameSnapshot(
+                    "recomp", gameId, titlesByGame.GetValueOrDefault(gameId) ?? portName,
+                    logsByGame.GetValueOrDefault(gameId) ?? marker,
                     schema.Values.OrderBy(a => a.Id, StringComparer.OrdinalIgnoreCase).ToArray(),
                     "ps4recomp");
+                if (games.TryGetValue(gameId, out var existing))
+                    snapshot = snapshot with { Achievements = UnionAchievements(existing.Achievements, snapshot.Achievements) };
+                games[gameId] = snapshot;
             }
         }
     }
@@ -383,9 +466,109 @@ public sealed class RecompDataAdapter(PlatformSourceOptions? defaults = null)
 
     private static string InferPs4RecompId(string portDir, string fallbackName)
     {
-        var match = Regex.Match(portDir, @"(CUSA\d{5})", RegexOptions.IgnoreCase);
+        var match = Regex.Match(portDir, @"(CUSA\d{5}|NPWR\d{5}_\d{2})", RegexOptions.IgnoreCase);
         return match.Success ? match.Groups[1].Value.ToUpperInvariant() : fallbackName;
     }
+
+    private static string? FindNearestPs4File(string startDirectory, string fileName, string stopDirectory, int maxLevels)
+    {
+        var stop = Path.GetFullPath(stopDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var current = Path.GetFullPath(startDirectory);
+        for (var level = 0; level <= maxLevels; level++)
+        {
+            var stopPrefix = stop + Path.DirectorySeparatorChar;
+            if (!string.Equals(current, stop, StringComparison.OrdinalIgnoreCase)
+                && !current.StartsWith(stopPrefix, StringComparison.OrdinalIgnoreCase)) break;
+            var candidate = Path.Combine(current, fileName);
+            try
+            {
+                if (File.Exists(candidate) && (File.GetAttributes(candidate) & FileAttributes.ReparsePoint) == 0)
+                    return candidate;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
+            if (string.Equals(current, stop, StringComparison.OrdinalIgnoreCase)) break;
+            current = Path.GetDirectoryName(current)!;
+            if (string.IsNullOrWhiteSpace(current)) break;
+        }
+        return null;
+    }
+
+    private static IReadOnlyList<string> DiscoverPs4GameDataRoots(string portDir)
+    {
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var settingsFile in SafeEnumerateFiles(portDir, "*.json", 3)
+                     .Where(path => Path.GetFileName(path).Equals("settings.json", StringComparison.OrdinalIgnoreCase)
+                         || Path.GetFileName(path).Equals("launcher.json", StringComparison.OrdinalIgnoreCase)
+                         || Path.GetFileName(path).Equals("config.json", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                if (new FileInfo(settingsFile).Length > 1024 * 1024) continue;
+                using var document = JsonDocument.Parse(File.ReadAllBytes(settingsFile),
+                    new JsonDocumentOptions { MaxDepth = 32, AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
+                AddConfiguredPs4Paths(document.RootElement, Path.GetDirectoryName(settingsFile)!, roots, 0);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException) { }
+        }
+
+        foreach (var script in SafeEnumerateFiles(portDir, "run.py", 3))
+        {
+            try
+            {
+                if (new FileInfo(script).Length > 1024 * 1024) continue;
+                var source = File.ReadAllText(script);
+                foreach (Match match in Regex.Matches(source,
+                             """(?im)^\s*(?:GAME|ORIGINAL_GAME|DATA)_(?:DIR|PATH|FOLDER)\s*=\s*['\"](?<path>[^'\"\r\n]+)['\"]"""))
+                    AddConfiguredPs4Path(match.Groups["path"].Value, Path.GetDirectoryName(script)!, roots);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException) { }
+        }
+        return roots.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static void AddConfiguredPs4Paths(JsonElement element, string baseDirectory, HashSet<string> roots, int depth)
+    {
+        if (depth > 16) return;
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.String && IsPs4GamePathKey(property.Name))
+                    AddConfiguredPs4Path(property.Value.GetString(), baseDirectory, roots);
+                else if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                    AddConfiguredPs4Paths(property.Value, baseDirectory, roots, depth + 1);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+                AddConfiguredPs4Paths(item, baseDirectory, roots, depth + 1);
+        }
+    }
+
+    private static bool IsPs4GamePathKey(string name) => name.Trim().ToLowerInvariant().Replace('-', '_') is
+        "game_dir" or "game_directory" or "game_path" or "game_folder" or
+        "original_game" or "original_game_dir" or "original_game_directory" or "original_game_path" or "original_game_folder" or
+        "data_dir" or "data_directory" or "data_path" or "data_folder";
+
+    private static void AddConfiguredPs4Path(string? configuredPath, string baseDirectory, HashSet<string> roots)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath)) return;
+        try
+        {
+            var expanded = Environment.ExpandEnvironmentVariables(configuredPath.Trim().Trim('"', '\''));
+            var fullPath = Path.GetFullPath(Path.IsPathRooted(expanded) ? expanded : Path.Combine(baseDirectory, expanded));
+            if (!Directory.Exists(fullPath) || !HasPs4TrophyRoot(fullPath)) return;
+            if ((File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) != 0) return;
+            roots.Add(fullPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException) { }
+    }
+
+    private static bool HasPs4TrophyRoot(string path) =>
+        Directory.Exists(Path.Combine(path, "sce_sys", "trophy"))
+        || File.Exists(Path.Combine(path, "sce_sys", "npbind.dat"))
+        || Directory.Exists(Path.Combine(path, "TrophyFiles"));
 
     private static IReadOnlyList<PlatformAchievement> ParseGenericAchievementJson(string path) =>
         ParseGenericAchievementJsonText(File.ReadAllText(path), defaultEarnedIfListed: false);
@@ -505,8 +688,11 @@ public sealed class RecompDataAdapter(PlatformSourceOptions? defaults = null)
                 Description = existing.Description ?? item.Description,
                 Earned = earned,
                 EarnedTimeUnix = earned ? Math.Max(existing.EarnedTimeUnix, item.EarnedTimeUnix) : 0,
+                EarnedKnown = existing.EarnedKnown || item.EarnedKnown,
                 IconPath = existing.IconPath ?? item.IconPath,
+                IconGrayPath = existing.IconGrayPath ?? item.IconGrayPath,
                 TrophyType = existing.TrophyType ?? item.TrophyType,
+                RarityPercent = existing.RarityPercent ?? item.RarityPercent,
                 Hidden = existing.Hidden || item.Hidden
             };
         }

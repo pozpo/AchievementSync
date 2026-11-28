@@ -14,9 +14,19 @@ public sealed class ExportPreviewFileViewModel
     }
 
     public string RelativePath => _file.RelativePath;
+    public bool IsEmptyMarker => _file.Json.Length == 0
+        && (_file.RelativePath.EndsWith(".platform", StringComparison.OrdinalIgnoreCase)
+            || _file.RelativePath.EndsWith("/blacklist", StringComparison.OrdinalIgnoreCase));
     public string Summary => _newUnlocks is null
-        ? $"{_file.AchievementCount:N0} known state(s) · AppID {_file.AppId}"
-        : $"{_file.AchievementCount:N0} states · +{_newUnlocks:N0} new unlock(s) · AppID {_file.AppId}";
+        ? IsEmptyMarker
+            ? $"Empty marker file · AppID {_file.AppId}"
+            : $"{_file.AchievementCount:N0} known state(s) · AppID {_file.AppId}"
+        : IsEmptyMarker
+            ? $"Empty marker file · uploaded as 0 bytes · AppID {_file.AppId}"
+            : $"{_file.AchievementCount:N0} states · +{_newUnlocks:N0} new unlock(s) · AppID {_file.AppId}";
+    public string ContentHint => IsEmptyMarker
+        ? "This is an intentionally empty marker file. The selected path identifies its platform or blacklist status; GitHub receives a zero-byte file."
+        : "Select a file from the list to inspect its exact JSON. Nothing is uploaded until you push.";
     public string Json => _file.Json;
     public string FormattedJson => PrettyPrint(_file.Json);
 

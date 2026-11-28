@@ -25,7 +25,7 @@ public static class MetadataAchievementExportPlanner
 {
     private const long MaximumExportBytes = 4 * 1024 * 1024;
 
-    /// <summary>Returns one export file per cached AppID with a usable, non-empty achievements.json.</summary>
+    /// <summary>Returns one export file per cached AppID with at least one confirmed unlocked achievement.</summary>
     public static (IReadOnlyList<MetadataAchievementExport> Files, IReadOnlyList<MetadataAchievementFailure> Failures)
         Build(string metadataRoot, IReadOnlySet<string>? appIds = null)
     {
@@ -63,9 +63,12 @@ public static class MetadataAchievementExportPlanner
                 }
 
                 var count = 0;
+                var unlockedCount = 0;
                 foreach (var property in document.RootElement.EnumerateObject())
                 {
-                    if (property.Value.ValueKind == JsonValueKind.Object) count++;
+                    if (property.Value.ValueKind != JsonValueKind.Object) continue;
+                    count++;
+                    if (IsEarned(property.Value)) unlockedCount++;
                 }
 
                 if (count == 0)
@@ -74,14 +77,37 @@ public static class MetadataAchievementExportPlanner
                     continue;
                 }
 
+                if (unlockedCount == 0) continue;
+
                 files.Add(new MetadataAchievementExport(appId, $"AppID/{appId}/achievements.json", json, count));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException or JsonException)
             {
-                failures.Add(new MetadataAchievementFailure(appId, exception.Message));
+                failures.Add(new MetadataAchievementFailure(appId, $"Could not read the local achievement file ({exception.GetType().Name})."));
             }
         }
 
         return (files, failures);
     }
+
+    internal static bool ContainsUnlockedAchievement(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json,
+                new JsonDocumentOptions { MaxDepth = 64, CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.EnumerateObject().Any(property =>
+                    property.Value.ValueKind == JsonValueKind.Object && IsEarned(property.Value));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsEarned(JsonElement state) =>
+        state.TryGetProperty("earned", out var earned)
+        && (earned.ValueKind == JsonValueKind.True
+            || (earned.ValueKind == JsonValueKind.Number && earned.TryGetDouble(out var number) && number != 0));
 }

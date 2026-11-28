@@ -226,7 +226,7 @@ internal sealed class WindowsGameProcessMonitor : IAsyncDisposable
             return true;
         }
         catch (Exception exception) when (exception is ManagementException or System.Runtime.InteropServices.COMException
-            or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
+            or InvalidOperationException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             DisposeWatcher(startWatcher);
             DisposeWatcher(stopWatcher);

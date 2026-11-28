@@ -668,30 +668,52 @@ public sealed class PlayStationDataAdapter() : PlatformDataAdapter("playstation"
 
     public static IReadOnlyList<PlatformAchievement> ReadPs4TrophyXmlDirectory(string xmlDirectory)
     {
-        var files = Directory.GetFiles(xmlDirectory)
+        var documents = Directory.GetFiles(xmlDirectory)
             .Where(path => Regex.IsMatch(Path.GetFileName(path), @"^trop(_\d{2})?\.xml$", RegexOptions.IgnoreCase))
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Select(path => (Name: Path.GetFileName(path), Xml: File.ReadAllText(path)))
+            .ToArray();
+        return ReadPs4TrophyXmlDocuments(documents);
+    }
+
+    public static IReadOnlyList<PlatformAchievement> ReadPs4TrophyXmlDocuments(
+        IEnumerable<(string Name, string Xml)> documents)
+    {
+        var files = documents
+            .Where(document => Regex.IsMatch(document.Name, @"^trop(?:_\d{2})?\.(?:xml|sfm|esfm)$", RegexOptions.IgnoreCase))
+            .OrderBy(document => document.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         if (files.Length == 0) return [];
 
         var entries = new SortedDictionary<int, PlatformAchievement>();
-        var isEnglishFirst = Path.GetFileName(files[0]).Equals("trop_01.xml", StringComparison.OrdinalIgnoreCase) || files.Length == 1;
+        var isEnglishFirst = files[0].Name.Equals("trop_01.xml", StringComparison.OrdinalIgnoreCase) || files.Length == 1;
         for (var index = 0; index < files.Length; index++)
         {
             var isPreferred = index == 0 && isEnglishFirst || index == 1 && !isEnglishFirst && files.Length > 1;
-            var document = XDocument.Load(files[index]);
+            var document = XDocument.Parse(files[index].Xml, LoadOptions.None);
             foreach (var trophy in document.Descendants().Where(element => element.Name.LocalName == "trophy"))
             {
                 if (!int.TryParse(trophy.Attribute("id")?.Value, out var id)) continue;
-                var unlocked = string.Equals(trophy.Attribute("unlockstate")?.Value, "true", StringComparison.OrdinalIgnoreCase)
-                               || string.Equals(trophy.Attribute("unlocked")?.Value, "yes", StringComparison.OrdinalIgnoreCase);
-                long.TryParse(trophy.Attribute("timestamp")?.Value, out var timestamp);
+                var unlockedValue = trophy.Attribute("unlockstate")?.Value
+                    ?? trophy.Attribute("unlocked")?.Value
+                    ?? trophy.Attribute("state")?.Value;
+                var unlocked = SteamAppIdResolver.NormalizeEarnedFlag(unlockedValue) ?? false;
+                var timestamp = unlocked
+                    ? SteamAppIdResolver.NormalizeUnixSeconds(trophy.Attribute("unlocked_timestamp")?.Value
+                        ?? trophy.Attribute("unlock_timestamp")?.Value
+                        ?? trophy.Attribute("timestamp")?.Value)
+                    : 0L;
                 var name = trophy.Elements().FirstOrDefault(element => element.Name.LocalName == "name")?.Value.Trim();
                 var detail = trophy.Elements().FirstOrDefault(element => element.Name.LocalName == "detail")?.Value.Trim();
                 var type = TrophyType(trophy.Attribute("ttype")?.Value);
                 if (entries.TryGetValue(id, out var existing) && !isPreferred)
                 {
-                    entries[id] = existing with { Earned = existing.Earned || unlocked };
+                    var earned = existing.Earned || unlocked;
+                    entries[id] = existing with
+                    {
+                        Earned = earned,
+                        EarnedTimeUnix = earned ? Math.Max(existing.EarnedTimeUnix, timestamp) : 0
+                    };
                     continue;
                 }
 

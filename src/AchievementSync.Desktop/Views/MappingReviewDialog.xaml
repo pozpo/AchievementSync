@@ -7,17 +7,16 @@
         mc:Ignorable="d"
         Title="Review Steam AppID Mappings" Width="820" Height="580" MinWidth="680" MinHeight="420"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource Modern.CanvasBrush}"
         d:DataContext="{d:DesignInstance vm:MappingReviewViewModel}">
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/Themes/ModernTheme.xaml"/>
+                <ResourceDictionary Source="pack://application:,,,/AchievementSync;component/Themes/ModernTheme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Window.Resources>
 
-    <Grid Margin="22">
+    <Grid Margin="22" Background="{StaticResource Modern.CanvasBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>

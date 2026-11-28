@@ -210,7 +210,7 @@
 
                     <StackPanel Grid.Row="0" Margin="0,0,0,18">
                         <TextBlock Text="Your game library" Style="{StaticResource Modern.Text.Display}"/>
-                        <TextBlock Text="Browse games found in enabled achievement folders. Filter by progress or sort by name and recent unlock." Style="{StaticResource Modern.Text.Caption}" FontSize="12.5" Margin="0,6,0,0"/>
+                        <TextBlock Text="Browse games with at least one unlocked achievement. Filter by progress or sort by name and recent unlock." Style="{StaticResource Modern.Text.Caption}" FontSize="12.5" Margin="0,6,0,0"/>
                     </StackPanel>
 
                     <WrapPanel Grid.Row="1" Margin="0,0,0,8">
@@ -555,7 +555,7 @@
                                         <Grid Margin="0,6,0,0">
                                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                             <Button Content="Disconnect" Command="{Binding DisconnectGitHubCommand}" IsEnabled="{Binding IsGitHubSignedIn}" Style="{StaticResource Modern.SecondaryButton}" Padding="8,8" Margin="0,0,3,0" ToolTip="Remove the saved GitHub credential from Windows Credential Manager."/>
-                                            <Button Grid.Column="1" Content="Sync all metadata" Command="{Binding SyncAllMetadataCommand}" IsEnabled="{Binding CanSyncAll}" Style="{StaticResource Modern.SecondaryButton}" Padding="8,8" Margin="3,0,0,0" ToolTip="Connect GitHub first. This shows the target and files for confirmation before uploading AppID achievements.json files."/>
+                                            <Button Grid.Column="1" Content="Sync all achievement data" Command="{Binding SyncAllMetadataCommand}" IsEnabled="{Binding CanSyncAll}" Style="{StaticResource Modern.SecondaryButton}" Padding="8,8" Margin="3,0,0,0" ToolTip="Collect configured platform sources, review the target, and confirm before uploading AppID achievement JSON or platform marker files."/>
                                         </Grid>
                                     </StackPanel>
                                 </Grid>
@@ -577,7 +577,7 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
                                         <Button Content="Backup saves" Command="{Binding BackupSavesCommand}" IsEnabled="{Binding CanBackup}" Style="{StaticResource Modern.PrimaryButton}" Padding="14,9" Margin="0,0,0,8" ToolTip="Connect GitHub first. Discovers game save files in known locations, then shows the files for confirmation before upload."/>
-                                        <Button Content="Restore from GitHub" Command="{Binding RestoreSavesCommand}" IsEnabled="{Binding CanRestore}" Style="{StaticResource Modern.SecondaryButton}" Padding="14,9" ToolTip="Connect GitHub first. Fetches the backup and, after confirmation, restores files to their recorded locations."/>
+                                        <Button Content="Restore from GitHub" Command="{Binding RestoreSavesCommand}" IsEnabled="{Binding CanRestore}" Style="{StaticResource Modern.SecondaryButton}" Padding="14,9" ToolTip="Connect GitHub first. Scans the selected branch even on a new PC with an empty library, then restores missing saves to their recorded paths and achievements to the local library cache. Existing files are kept."/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="2">
                                         <TextBlock Text="RESTORE" Style="{StaticResource Modern.Text.Overline}"/>
@@ -629,7 +629,7 @@
                                     <Border Grid.Row="1" Style="{StaticResource Modern.InsetCard}" Padding="14" CornerRadius="14">
                                         <Grid>
                                             <TextBox Text="{Binding SelectedExport.FormattedJson, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" AcceptsTab="False" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Background="Transparent" BorderThickness="0" Foreground="#D6DFEB" FontFamily="Consolas" FontSize="12" ToolTip="Exact JSON for the selected AppID file (pretty-printed)"/>
-                                            <TextBlock Text="Select a file from the list to inspect its exact JSON. Nothing is uploaded until you push." Style="{StaticResource Modern.Text.Caption}" TextAlignment="Center" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="380" IsHitTestVisible="False" Visibility="{Binding EmptyExportMessageVisibility}"/>
+                                            <TextBlock Text="{Binding EmptyExportMessage}" Style="{StaticResource Modern.Text.Caption}" TextAlignment="Center" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="380" IsHitTestVisible="False" Visibility="{Binding EmptyExportMessageVisibility}"/>
                                         </Grid>
                                     </Border>
                                 </Grid>
@@ -649,7 +649,7 @@
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                             <StackPanel Grid.Row="0" Margin="0,0,0,18">
                                 <TextBlock Text="Platforms" Style="{StaticResource Modern.Text.Display}"/>
-                                <TextBlock Text="AchievementSync monitors configured local folders and refreshes platform data when achievement or save files change. Use each platform’s Scan platform button for a manual refresh. GitHub sync exports numeric Steam AppID files; non-Steam snapshots stay local." Style="{StaticResource Modern.Text.Caption}" FontSize="12.5" Margin="0,6,0,0"/>
+                                <TextBlock Text="AchievementSync monitors configured local sources and refreshes data when files change. Review matched Steam AppIDs before export; GitHub sync unions local progress and adds source markers for non-Steam platforms." Style="{StaticResource Modern.Text.Caption}" FontSize="12.5" Margin="0,6,0,0"/>
                             </StackPanel>
 
                             <Border Grid.Row="1" Style="{StaticResource Modern.Card}" Padding="16,13" CornerRadius="14" Margin="0,0,0,14">
@@ -669,11 +669,13 @@
                                         <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Grid Width="420" Margin="0,0,14,10">
+                                                <Grid Width="480" Margin="0,0,14,10">
+                                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                                     <Grid.ColumnDefinitions><ColumnDefinition Width="112"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                                     <TextBlock Text="{Binding Label}" Style="{StaticResource Modern.Text.Caption}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                                    <TextBox Grid.Column="1" Text="{Binding Path, UpdateSourceTrigger=LostFocus}" Style="{StaticResource Modern.TextBox}" ToolTip="Source folder path"/>
+                                                    <TextBox Grid.Column="1" Text="{Binding Path, UpdateSourceTrigger=LostFocus}" Style="{StaticResource Modern.TextBox}" ToolTip="{Binding Description}"/>
                                                     <Button Grid.Column="2" Content="Browse…" Command="{Binding BrowseCommand}" Style="{StaticResource Modern.SecondaryButton}" Padding="12,8" Margin="8,0,0,0"/>
+                                                    <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding Description}" Style="{StaticResource Modern.Text.Micro}" TextWrapping="Wrap" Margin="112,3,4,0"/>
                                                 </Grid>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -684,21 +686,24 @@
                                             <Grid Grid.Row="0">
                                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                                 <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                                    <TextBlock Text="RetroAchievements" FontSize="12.5" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="RetroAchievements public progress" FontSize="12.5" FontWeight="SemiBold"/>
                                                     <TextBox Text="{Binding RetroAchievementsUser, UpdateSourceTrigger=LostFocus}" Style="{StaticResource Modern.TextBox}" Margin="0,8,0,0" ToolTip="RetroAchievements username"/>
                                                     <PasswordBox x:Name="RetroAchievementsApiKeyBox" Style="{StaticResource Modern.SecretBox}" Margin="0,8,0,0" ToolTip="API key saved only in Windows Credential Manager"/>
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="1" Margin="6,0,12,0">
-                                                    <TextBlock Text="Official Store Client IDs" FontSize="12.5" FontWeight="SemiBold"/>
-                                                    <TextBox Text="{Binding XboxClientId, UpdateSourceTrigger=LostFocus}" Style="{StaticResource Modern.TextBox}" Margin="0,8,0,0" ToolTip="User-configured Microsoft Entra Application ID for Xbox PC"/>
-                                                    <TextBox Text="{Binding EpicClientId, UpdateSourceTrigger=LostFocus}" Style="{StaticResource Modern.TextBox}" Margin="0,8,0,0" ToolTip="User-configured Epic Developer Portal Client ID for EAS"/>
+                                                    <TextBlock Text="Xbox PC account" FontSize="12.5" FontWeight="SemiBold"/>
+                                                    <TextBox Text="{Binding XboxClientId, UpdateSourceTrigger=LostFocus}" Style="{StaticResource Modern.TextBox}" Margin="0,8,0,0" ToolTip="Your Microsoft Entra public-client Application ID. The app uses device-code sign-in and never supplies a borrowed client ID."/>
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                                    <Button Content="Save credentials" Click="SavePlatformCredentials_Click" Style="{StaticResource Modern.PrimaryButton}" Padding="12,8" Margin="0,0,0,6"/>
+                                                    <Button Content="Connect Xbox PC" Click="ConnectXboxPlatform_Click" Style="{StaticResource Modern.PrimaryButton}" Padding="12,8" Margin="0,0,0,6" ToolTip="Sign in with the Xbox account used by the Xbox app through Microsoft's device-code flow."/>
+                                                    <Button Content="Save RA API key" Click="SavePlatformCredentials_Click" Style="{StaticResource Modern.SecondaryButton}" Padding="12,8" Margin="0,0,0,6" ToolTip="Saves the RetroAchievements API key to Windows Credential Manager. Client IDs save automatically."/>
                                                     <Button Content="Clear saved tokens" Click="ClearPlatformCredentials_Click" Style="{StaticResource Modern.SecondaryButton}" Padding="12,8"/>
                                                 </StackPanel>
                                             </Grid>
-                                            <TextBlock Grid.Row="1" Text="{Binding PlatformCredentialStatus}" Style="{StaticResource Modern.Text.Micro}" VerticalAlignment="Center" Margin="2,10,0,0"/>
+                                            <StackPanel Grid.Row="1" Margin="2,10,0,0">
+                                                <TextBlock Text="{Binding PlatformCredentialStatus}" Style="{StaticResource Modern.Text.Micro}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                                <CheckBox Style="{StaticResource Modern.Switch}" Content="Enable LumaPlay registry monitoring" IsChecked="{Binding LumaPlayWatcherEnabled, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0" ToolTip="On Windows, watch HKCU\SOFTWARE\LumaPlay for achievement changes and rescan Ubisoft progress. This is optional and off by default."/>
+                                            </StackPanel>
                                         </Grid>
                                     </Border>
                                 </StackPanel>

@@ -11,7 +11,8 @@ public sealed record DiscoveredSaveFile(
     string SourcePath,
     long Size,
     string Sha256,
-    string RepoPath);
+    string RepoPath,
+    string? BackupFolder = null);
 
 /// <summary>Progress snapshot for the save-backup upload pipeline. FilesProcessed/FilesTotal span the whole batch; BytesProcessed/BytesTotal likewise. Stage is a short human-readable hint.</summary>
 public readonly record struct SaveBackupProgress(
@@ -47,15 +48,17 @@ public sealed record RestorationManifest(
     [property: JsonPropertyName("achievementFormat")] string AchievementFormat,
     [property: JsonPropertyName("achievementSourcePath")] string? AchievementSourcePath,
     [property: JsonPropertyName("achievementSourceName")] string? AchievementSourceName,
-    [property: JsonPropertyName("saves")] IReadOnlyList<ManifestSaveEntry> Saves)
+    [property: JsonPropertyName("saves")] IReadOnlyList<ManifestSaveEntry> Saves,
+    [property: JsonPropertyName("repositoryFolder")] string? RepositoryFolder = null)
 {
     public static RestorationManifest Create(
         string appId,
         string achievementFormat,
         string? achievementSourcePath,
         string? achievementSourceName,
-        IReadOnlyList<ManifestSaveEntry> saves) =>
-        new(1, appId, achievementFormat, achievementSourcePath, achievementSourceName, saves);
+        IReadOnlyList<ManifestSaveEntry> saves,
+        string? repositoryFolder = null) =>
+        new(1, appId, achievementFormat, achievementSourcePath, achievementSourceName, saves, repositoryFolder);
 
     public string ToJson() => JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
 
@@ -77,7 +80,13 @@ public sealed record RestorationManifest(
 public sealed record SaveBackupPlan(
     string AppId,
     IReadOnlyList<SaveBackupItem> Items,
-    RestorationManifest Manifest);
+    RestorationManifest Manifest,
+    string? RepositoryFolder = null)
+{
+    public string EffectiveRepositoryFolder => RepositoryFolder
+        ?? Manifest.RepositoryFolder
+        ?? $"AppID/{AppId}";
+}
 
 /// <summary>Aggregate result of a save backup push.</summary>
 public sealed record SaveBackupResult(
@@ -112,4 +121,5 @@ public sealed record RestorePlan(
     string HeadSha,
     RestorationManifest Manifest,
     string? AchievementsJson,
-    IReadOnlyList<RestoreItem> Saves);
+    IReadOnlyList<RestoreItem> Saves,
+    string? RepositoryFolder = null);

@@ -4,10 +4,12 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchievementSync.Core.Metadata;
+using AchievementSync.Core.Platforms;
 
 namespace AchievementSync.Core.Synchronization;
 
-/// <summary>Previews and commits only viewer achievement JSON through the GitHub API.</summary>
+/// <summary>Previews and commits viewer achievement JSON plus supported empty marker files through the GitHub API.</summary>
 public sealed class GitHubAchievementSyncClient
 {
     private static readonly Uri ApiBase = new("https://api.github.com/");
@@ -173,10 +175,9 @@ public sealed class GitHubAchievementSyncClient
     }
 
     /// <summary>
-    /// Pushes viewer-compatible achievement JSON in a single non-forced commit.
-    /// Each file is merged with the remote file using the same rules as a normal preview
-    /// (remote unlocks are preserved); files whose merged content equals the remote are skipped.
-    /// Only achievements.json files are uploaded — nothing else. Per-file failures are collected in the report instead of aborting the whole sync.
+    /// Pushes viewer-compatible achievement JSON and empty marker files in a single non-forced commit.
+    /// Achievement JSON is merged with the remote file (remote unlocks are preserved); unchanged files
+    /// are skipped. Per-file failures are collected in the report instead of aborting the whole sync.
     /// </summary>
     public async Task<BulkSyncResult> PushBulkAsync(
         string token,
@@ -247,7 +248,7 @@ public sealed class GitHubAchievementSyncClient
             catch (Exception exception) when (exception is GitHubApiException or InvalidDataException or IOException or ArgumentException)
             {
                 achievementFilesFailed++;
-                entries.Add(new BulkSyncEntry(file.AppId, "failed", $"achievements.json: {exception.Message}"));
+                entries.Add(new BulkSyncEntry(file.AppId, "failed", $"{Path.GetFileName(file.RelativePath)}: {exception.Message}"));
             }
         }
 
@@ -268,7 +269,7 @@ public sealed class GitHubAchievementSyncClient
         using var bulkCommitResponse = await SendAsync(HttpMethod.Post,
             $"repos/{Escape(target.Owner)}/{Escape(target.Repository)}/git/commits",
             token,
-            new { message = "AchievementSync: sync achievement metadata", tree = treeSha, parents = new[] { baseCommit } },
+            new { message = "AchievementSync: sync achievement data", tree = treeSha, parents = new[] { baseCommit } },
             cancellationToken).ConfigureAwait(false);
         using var bulkNewCommit = await GitHubDeviceFlowClient.ReadJsonAsync(bulkCommitResponse, cancellationToken).ConfigureAwait(false);
         var newCommitSha = GitHubDeviceFlowClient.RequiredString(bulkNewCommit.RootElement, "sha");
@@ -316,23 +317,22 @@ public sealed class GitHubAchievementSyncClient
         using var commit = await GitHubDeviceFlowClient.ReadJsonAsync(commitResponse, cancellationToken).ConfigureAwait(false);
         var baseTree = GitHubDeviceFlowClient.RequiredString(commit.RootElement.GetProperty("tree"), "sha");
 
-        // Parallel manifest prefetch: one GET per AppID, all at once. Previously sequential per AppID,
+        // Parallel manifest prefetch: one GET per backup folder, all at once. Previously sequential per AppID,
         // which dominated startup time when there are many games.
-        var remoteManifests = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        var remoteManifests = new System.Collections.Concurrent.ConcurrentDictionary<string, RestorationManifest>(StringComparer.OrdinalIgnoreCase);
         await Task.WhenAll(plans.Select(async plan =>
         {
+            var folder = plan.EffectiveRepositoryFolder;
             try
             {
-                var json = await ReadRemoteTextAsync(token, target, baseCommit, $"AppID/{plan.AppId}/restoration-manifest.json", cancellationToken).ConfigureAwait(false);
+                ValidateBackupFolder(folder);
+                var json = await ReadRemoteTextAsync(token, target, baseCommit, $"{folder}/restoration-manifest.json", cancellationToken).ConfigureAwait(false);
                 var manifest = RestorationManifest.FromJson(json);
-                if (manifest?.Saves is not null)
-                    remoteManifests[plan.AppId] = manifest.Saves
-                        .GroupBy(entry => entry.RepoPath, StringComparer.Ordinal)
-                        .ToDictionary(group => group.Key, group => group.First().Sha256, StringComparer.Ordinal);
+                if (manifest is not null) remoteManifests[folder] = manifest;
             }
             catch (Exception ex) when (ex is GitHubApiException or IOException or ArgumentException)
             {
-                remoteManifests[plan.AppId] = new Dictionary<string, string>(StringComparer.Ordinal);
+                remoteManifests[folder] = RestorationManifest.Create(plan.AppId, "json", null, null, [], folder);
             }
         })).ConfigureAwait(false);
 
@@ -345,9 +345,16 @@ public sealed class GitHubAchievementSyncClient
         foreach (var plan in plans.OrderBy(plan => plan.AppId, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report(new SaveBackupProgress(filesProcessed, totalFiles, bytesProcessed, totalBytes, $"Reading AppID {plan.AppId} manifest…"));
+            var repositoryFolder = plan.EffectiveRepositoryFolder;
+            ValidateBackupFolder(repositoryFolder);
+            var manifestPath = $"{repositoryFolder}/restoration-manifest.json";
+            progress?.Report(new SaveBackupProgress(filesProcessed, totalFiles, bytesProcessed, totalBytes, $"Reading {plan.AppId} manifest…"));
 
-            var remoteSaves = remoteManifests.TryGetValue(plan.AppId, out var saves) ? saves : new Dictionary<string, string>(StringComparer.Ordinal);
+            var remoteManifest = remoteManifests.GetValueOrDefault(repositoryFolder);
+            var remoteSaves = remoteManifest?.Saves
+                .GroupBy(entry => entry.RepoPath, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First().Sha256, StringComparer.Ordinal)
+                ?? new Dictionary<string, string>(StringComparer.Ordinal);
 
             // Phase B: classify items and detect no-ops. SHA-256 comes from discovery (stored on the item),
             // so no re-hashing or byte loading happens here. Items needing upload are queued for Phase C.
@@ -356,11 +363,11 @@ public sealed class GitHubAchievementSyncClient
             {
                 try
                 {
-                    var expectedPrefix = $"AppID/{plan.AppId}/";
+                    var expectedPrefix = repositoryFolder + "/";
                     if (string.IsNullOrEmpty(item.RepoPath)
                         || !item.RepoPath.StartsWith(expectedPrefix, StringComparison.Ordinal)
                         || item.RepoPath.Contains("..", StringComparison.Ordinal))
-                        throw new InvalidDataException("A backup item contained a path outside AppID/<numeric id>/.");
+                        throw new InvalidDataException("A backup item contained a path outside its backup folder.");
 
                     if (string.Equals(item.RepoPath, $"AppID/{plan.AppId}/achievements.json", StringComparison.Ordinal))
                     {
@@ -386,7 +393,7 @@ public sealed class GitHubAchievementSyncClient
                         continue;
                     }
 
-                    if (!item.RepoPath.StartsWith($"AppID/{plan.AppId}/save/", StringComparison.Ordinal))
+                    if (!item.RepoPath.StartsWith(repositoryFolder + "/save/", StringComparison.Ordinal))
                         throw new InvalidDataException("A backup item contained an unexpected path.");
 
                     var sha256 = item.Sha256;
@@ -473,12 +480,25 @@ public sealed class GitHubAchievementSyncClient
 
             try
             {
-                var manifestText = plan.Manifest.ToJson();
-                var currentManifest = await ReadRemoteTextAsync(token, target, baseCommit, $"AppID/{plan.AppId}/restoration-manifest.json", cancellationToken).ConfigureAwait(false);
+                var mergedSaves = (remoteManifest?.Saves ?? [])
+                    .Concat(plan.Manifest.Saves)
+                    .GroupBy(entry => entry.RepoPath, StringComparer.Ordinal)
+                    .Select(group => group.Last())
+                    .OrderBy(entry => entry.RepoPath, StringComparer.Ordinal)
+                    .ToArray();
+                var mergedManifest = plan.Manifest with
+                {
+                    AchievementSourcePath = plan.Manifest.AchievementSourcePath ?? remoteManifest?.AchievementSourcePath,
+                    AchievementSourceName = plan.Manifest.AchievementSourceName ?? remoteManifest?.AchievementSourceName,
+                    Saves = mergedSaves,
+                    RepositoryFolder = repositoryFolder
+                };
+                var manifestText = mergedManifest.ToJson();
+                var currentManifest = await ReadRemoteTextAsync(token, target, baseCommit, manifestPath, cancellationToken).ConfigureAwait(false);
                 if (!string.Equals(currentManifest, manifestText, StringComparison.Ordinal))
                 {
                     var manifestSha = await CreateBlobAsync(token, target, manifestText, encoding: "utf-8", cancellationToken).ConfigureAwait(false);
-                    treeEntries.Add(new { path = $"AppID/{plan.AppId}/restoration-manifest.json", mode = "100644", type = "blob", sha = manifestSha });
+                    treeEntries.Add(new { path = manifestPath, mode = "100644", type = "blob", sha = manifestSha });
                     pushed++;
                     report.Add($"{plan.AppId} — restoration-manifest.json pushed");
                 }
@@ -536,38 +556,99 @@ public sealed class GitHubAchievementSyncClient
     public async Task<IReadOnlyList<RestorePlan>> PullSaveBackupAsync(
         string token,
         GitHubSyncTarget target,
-        IReadOnlyCollection<string> appIds,
+        IReadOnlyCollection<string>? appIds = null,
+        PlatformSourceOptions? localOptions = null,
         CancellationToken cancellationToken = default)
     {
         ValidateTarget(target);
-        var plans = new List<RestorePlan>();
-        var refPath = RefPath(target);
-        using var referenceResponse = await SendAsync(HttpMethod.Get, refPath, token, null, cancellationToken).ConfigureAwait(false);
+        using var referenceResponse = await SendAsync(HttpMethod.Get, RefPath(target), token, null, cancellationToken).ConfigureAwait(false);
         using var reference = await GitHubDeviceFlowClient.ReadJsonAsync(referenceResponse, cancellationToken).ConfigureAwait(false);
         var headSha = GitHubDeviceFlowClient.RequiredString(reference.RootElement.GetProperty("object"), "sha");
+        using var commitResponse = await SendAsync(HttpMethod.Get,
+            $"repos/{Escape(target.Owner)}/{Escape(target.Repository)}/git/commits/{Escape(headSha)}",
+            token, null, cancellationToken).ConfigureAwait(false);
+        using var commit = await GitHubDeviceFlowClient.ReadJsonAsync(commitResponse, cancellationToken).ConfigureAwait(false);
+        var treeSha = GitHubDeviceFlowClient.RequiredString(commit.RootElement.GetProperty("tree"), "sha");
+        using var treeResponse = await SendAsync(HttpMethod.Get,
+            $"repos/{Escape(target.Owner)}/{Escape(target.Repository)}/git/trees/{Escape(treeSha)}?recursive=1",
+            token, null, cancellationToken).ConfigureAwait(false);
+        using var tree = await GitHubDeviceFlowClient.ReadJsonAsync(treeResponse, cancellationToken).ConfigureAwait(false);
+        if (tree.RootElement.TryGetProperty("truncated", out var truncated)
+            && truncated.ValueKind == System.Text.Json.JsonValueKind.True)
+            throw new GitHubApiException("The repository tree is too large to enumerate for restore. Restore specific games after they appear in the library.");
 
-        foreach (var appId in appIds.Order(StringComparer.Ordinal))
+        var paths = tree.RootElement.TryGetProperty("tree", out var entries)
+            && entries.ValueKind == System.Text.Json.JsonValueKind.Array
+            ? entries.EnumerateArray()
+                .Select(item => item.TryGetProperty("path", out var path) && path.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? path.GetString()
+                    : null)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path!)
+                .ToHashSet(StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+
+        var requestedIds = appIds?.Where(AppIdValidator.IsValid).ToHashSet(StringComparer.Ordinal);
+        var manifestPaths = paths.Where(path => path.EndsWith("/restoration-manifest.json", StringComparison.Ordinal)
+                && (path.StartsWith("AppID/", StringComparison.Ordinal)
+                    || path.StartsWith("PlatformSave/", StringComparison.Ordinal)))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var plans = new List<RestorePlan>();
+        var restoredAppIds = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var manifestPath in manifestPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var manifestText = await ReadRemoteTextAsync(token, target, headSha, $"AppID/{appId}/restoration-manifest.json", cancellationToken).ConfigureAwait(false);
-            var manifest = RestorationManifest.FromJson(manifestText);
-            if (manifest is null) continue;
+            var repositoryFolder = manifestPath[..^"/restoration-manifest.json".Length];
+            ValidateBackupFolder(repositoryFolder);
+            var segments = repositoryFolder.Split('/');
+            var isAppIdFolder = segments.Length == 2 && segments[0] == "AppID" && AppIdValidator.IsValid(segments[1]);
+            var pathAppId = isAppIdFolder ? segments[1] : string.Empty;
+            if (isAppIdFolder && requestedIds is { Count: > 0 } && !requestedIds.Contains(pathAppId)) continue;
 
-            var achievementsJson = await ReadAchievementFileAsync(token, target, headSha, appId, cancellationToken).ConfigureAwait(false);
+            var manifest = RestorationManifest.FromJson(await ReadRemoteTextAsync(token, target, headSha,
+                manifestPath, cancellationToken).ConfigureAwait(false));
+            if (manifest is null) continue;
+            var planId = isAppIdFolder ? pathAppId : manifest.AppId;
+            if (string.IsNullOrWhiteSpace(planId)) continue;
+            var effectiveManifest = manifest with { RepositoryFolder = repositoryFolder };
+            string? achievementsJson = isAppIdFolder
+                ? await ReadAchievementFileAsync(token, target, headSha, pathAppId, cancellationToken).ConfigureAwait(false)
+                : null;
             var saves = new List<RestoreItem>();
-            foreach (var entry in manifest.Saves)
+            foreach (var entry in effectiveManifest.Saves)
             {
-                var content = await ReadRemoteTextAsync(token, target, headSha, entry.RepoPath, cancellationToken).ConfigureAwait(false);
-                if (content is null) continue;
-                var targetPath = SaveFileDiscoverer.ResolveLocalPath(entry.RootKey, appId, entry.RelativePath);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!entry.RepoPath.StartsWith(repositoryFolder + "/save/", StringComparison.Ordinal)
+                    || !IsSafeRepositoryRelativePath(entry.RepoPath)
+                    || !paths.Contains(entry.RepoPath)) continue;
+                var targetPath = SaveFileDiscoverer.ResolveLocalPath(entry.RootKey, planId, entry.RelativePath,
+                    entry.SourcePath, localOptions);
                 if (targetPath is null) continue;
                 saves.Add(new RestoreItem(entry.RepoPath, targetPath, entry.Size, false));
             }
 
-            plans.Add(new RestorePlan(appId, headSha, manifest, achievementsJson, saves));
+            plans.Add(new RestorePlan(planId, headSha, effectiveManifest, achievementsJson, saves, repositoryFolder));
+            if (isAppIdFolder) restoredAppIds.Add(pathAppId);
         }
 
-        return plans;
+        // Achievement exports do not need a save-backup manifest. Restore them into the local metadata cache
+        // so a clean PC can rebuild its library from the user's GitHub branch.
+        foreach (var path in paths.Where(path => path.StartsWith("AppID/", StringComparison.Ordinal)
+                     && path.EndsWith("/achievements.json", StringComparison.Ordinal)).Order(StringComparer.Ordinal))
+        {
+            var segments = path.Split('/');
+            if (segments.Length != 3 || segments[0] != "AppID" || !AppIdValidator.IsValid(segments[1])) continue;
+            var appId = segments[1];
+            if (restoredAppIds.Contains(appId) || (requestedIds is { Count: > 0 } && !requestedIds.Contains(appId))) continue;
+            var json = await ReadAchievementFileAsync(token, target, headSha, appId, cancellationToken).ConfigureAwait(false);
+            if (json is null) continue;
+            var manifest = RestorationManifest.Create(appId, "json", null, null, [], $"AppID/{appId}");
+            plans.Add(new RestorePlan(appId, headSha, manifest, json, [], $"AppID/{appId}"));
+        }
+
+        return plans.OrderBy(plan => plan.RepositoryFolder, StringComparer.Ordinal).ToArray();
     }
 
     /// <summary>Reads one file from the repository as raw bytes (streamed through a single base64 response).</summary>
@@ -750,6 +831,39 @@ public sealed class GitHubAchievementSyncClient
         $"repos/{Escape(target.Owner)}/{Escape(target.Repository)}/git/refs/heads/{target.Branch}";
 
     private static string Escape(string value) => Uri.EscapeDataString(value);
+
+    private static void ValidateBackupFolder(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !IsSafeRepositoryRelativePath(folder))
+            throw new InvalidDataException("A backup folder contained an invalid repository path.");
+
+        var segments = folder.Split('/');
+        var validAppId = segments.Length == 2
+            && segments[0] == "AppID"
+            && AppIdValidator.IsValid(segments[1]);
+        var validPlatformSave = segments.Length == 4
+            && segments[0] == "PlatformSave"
+            && segments.Skip(1).All(IsSafeRepositorySegment);
+        if (!validAppId && !validPlatformSave)
+            throw new InvalidDataException("A backup folder must be AppID/<id> or PlatformSave/<platform>/<root>/<game>.");
+    }
+
+    private static bool IsSafeRepositoryRelativePath(string path) =>
+        !string.IsNullOrWhiteSpace(path)
+        && !path.StartsWith("/", StringComparison.Ordinal)
+        && !path.Contains('\\')
+        && path.Split('/').All(IsSafeRepositoryFileSegment);
+
+    private static bool IsSafeRepositoryFileSegment(string segment) =>
+        !string.IsNullOrWhiteSpace(segment)
+        && segment is not "." and not ".."
+        && segment.All(character => !char.IsControl(character) && "<>:\"|?*".IndexOf(character) < 0);
+
+    private static bool IsSafeRepositorySegment(string segment) =>
+        !string.IsNullOrWhiteSpace(segment)
+        && segment is not "." and not ".."
+        && !segment.Contains("..", StringComparison.Ordinal)
+        && segment.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.');
 
     private static void ValidateTarget(GitHubSyncTarget target)
     {

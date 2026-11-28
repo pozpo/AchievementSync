@@ -28,7 +28,10 @@ public sealed record SteamAppIdResolution(
     bool IsOverride,
     bool IsBlacklisted,
     IReadOnlyList<PlatformAchievement> NormalizedAchievements,
-    int DiscardedCount);
+    int DiscardedCount)
+{
+    public string? SourceVersion { get; init; }
+}
 
 /// <summary>
 /// Resolves non-Steam platform snapshots to Steam AppIDs using per-user overrides,
@@ -183,7 +186,10 @@ public sealed class SteamAppIdResolver
             isOverride,
             isBlacklisted,
             normalized,
-            discarded);
+            discarded)
+        {
+            SourceVersion = snapshot.Version
+        };
     }
 
     public static IReadOnlyList<PlatformAchievement> NormalizeAchievements(

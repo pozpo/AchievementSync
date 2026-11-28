@@ -11,9 +11,9 @@ public sealed class PlatformSourceFileMonitor : IDisposable
 {
     private static readonly HashSet<string> RelevantExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".acf", ".bin", ".cfg", ".dat", ".db", ".gpd", ".ini", ".json", ".mcr", ".old",
-        ".profile", ".sav", ".save", ".sfm", ".slt", ".srm", ".sqlite", ".slot", ".tres",
-        ".xml", ".vdf", ".rpgsave", ".ess", ".fos", ".bak", ".autosave"
+        ".acf", ".bak", ".bin", ".cfg", ".dat", ".db", ".gpd", ".ini", ".json", ".jpg", ".jpeg", ".key", ".log",
+        ".mcr", ".old", ".profile", ".py", ".sav", ".save", ".sfm", ".slt", ".srm",
+        ".png", ".sqlite", ".slot", ".toml", ".tres", ".trp", ".webp", ".xml", ".vdf", ".rpgsave", ".ess", ".fos", ".autosave"
     };
 
     private readonly object _gate = new();
@@ -226,8 +226,9 @@ public sealed class PlatformSourceFileMonitor : IDisposable
     private static string? PlatformForRoot(string key) => key.ToLowerInvariant() switch
     {
         "steam" => "steam",
-        "xblen" or "xboxpc" => "xbox",
-        "xbox360" => "xbox360",
+        "xblen" => "xbox",
+        "xboxpc" => "xboxpc",
+        "xbox360" or "xenia" => "xbox360",
         "gfwl" => "gfwl",
         "rpcs3" or "ps4" or "ps5" => "playstation",
         "epic" => "epic",
@@ -235,6 +236,8 @@ public sealed class PlatformSourceFileMonitor : IDisposable
         "uplay" or "uplaycache" or "uplayrune" => "uplay",
         "ea" => "ea",
         "recomp" or "ladxhd" => "recomp",
+        "lichii" or "eglantine" => "switch2",
+        "switch2recomp" => "switch2recomp",
         "retroachievements" or "ra" => "retroachievements",
         _ => null
     };

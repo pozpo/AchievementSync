@@ -42,6 +42,7 @@ public partial class MainWindow : Window
     private WindowsGameProcessMonitor? _processMonitor;
     private LocalAchievementFileMonitor? _achievementFileMonitor;
     private PlatformSourceFileMonitor? _platformSourceMonitor;
+    private LumaPlayRegistryMonitor? _lumaPlayRegistryMonitor;
     private readonly SteamDbScreenshotCache _steamDbScreenshotCache = new();
     private AchievementTrayIcon? _trayIcon;
     private bool _loaded;
@@ -95,6 +96,12 @@ public partial class MainWindow : Window
         _platformSourceMonitor.PlatformChanged += OnPlatformSourceChanged;
         _platformSourceMonitor.Configure(_viewModel.WatchablePlatformRoots);
         if (_monitoringPaused) _platformSourceMonitor.SetPaused(true);
+        _lumaPlayRegistryMonitor = new LumaPlayRegistryMonitor(() =>
+        {
+            Dispatcher.BeginInvoke(new Action(() => _ = _viewModel.ScanPlatformAsync("uplay")));
+        });
+        _lumaPlayRegistryMonitor.Configure(_viewModel.LumaPlayWatcherEnabled);
+        if (_monitoringPaused) _lumaPlayRegistryMonitor.SetPaused(true);
         _processMonitor = new WindowsGameProcessMonitor(_viewModel.GameplayTracker);
         _processMonitor.StateChanged += OnPlaytimeChanged;
         await _processMonitor.StartAsync();
@@ -181,6 +188,9 @@ public partial class MainWindow : Window
         _viewModel.SavePlatformCredentials(RetroAchievementsApiKeyBox.Password);
         RetroAchievementsApiKeyBox.Clear();
     }
+
+    private async void ConnectXboxPlatform_Click(object sender, RoutedEventArgs e) =>
+        await _viewModel.ConnectXboxPlatformAsync();
 
     private async void ConnectGitHubWithToken_Click(object sender, RoutedEventArgs e)
     {
@@ -288,6 +298,10 @@ public partial class MainWindow : Window
         {
             ApplyCompactMode(_viewModel.CompactModeEnabled);
         }
+        else if (e.PropertyName == nameof(MainViewModel.LumaPlayWatcherEnabled))
+        {
+            _lumaPlayRegistryMonitor?.Configure(_viewModel.LumaPlayWatcherEnabled);
+        }
     }
 
     private void ApplyCompactMode(bool enabled)
@@ -391,6 +405,8 @@ public partial class MainWindow : Window
             _platformSourceMonitor.Dispose();
             _platformSourceMonitor = null;
         }
+        _lumaPlayRegistryMonitor?.Dispose();
+        _lumaPlayRegistryMonitor = null;
         if (_processMonitor is not null)
         {
             _processMonitor.StateChanged -= OnPlaytimeChanged;
@@ -422,6 +438,7 @@ public partial class MainWindow : Window
         _processMonitor?.SetPaused(_monitoringPaused);
         _achievementFileMonitor?.SetPaused(_monitoringPaused);
         _platformSourceMonitor?.SetPaused(_monitoringPaused);
+        _lumaPlayRegistryMonitor?.SetPaused(_monitoringPaused);
         _trayIcon?.SetPaused(_monitoringPaused);
     }));
 

@@ -61,6 +61,9 @@ public sealed class PlatformSourceOptions
     public string? EaRoot { get; set; }
     public string? RecompRoot { get; set; }
     public string? LadxhdRoot { get; set; }
+    public string? LichiiRoot { get; set; }
+    public string? EglantineRoot { get; set; }
+    public string? Switch2RecompRoot { get; set; }
 
     public string? RetroAchievementsUser { get; set; }
     public string? RetroAchievementsApiKey { get; set; }
@@ -71,12 +74,6 @@ public sealed class PlatformSourceOptions
     public string? XboxXstsToken { get; set; }
     public string? XboxUhs { get; set; }
     public string? XboxXuid { get; set; }
-
-    // User-configured Epic Account Services OAuth client & runtime token fields (held in Credential Manager).
-    public string? EpicClientId { get; set; }
-    public string? EpicClientSecret { get; set; }
-    public string? EpicAccessToken { get; set; }
-    public string? EpicAccountId { get; set; }
 
     /// <summary>Builds the defaults for this Windows user from well-known locations.</summary>
     public static PlatformSourceOptions CreateDefault()
@@ -90,13 +87,13 @@ public sealed class PlatformSourceOptions
             SteamRoot = Path.Combine(programFilesX86, "Steam"),
             XblenRoot = Path.Combine(localAppData, "XLiveLessNess"),
             XboxPcRoot = Path.Combine(systemDrive, "XboxGames"),
-            Xbox360Root = Path.Combine(localAppData, "Xenia"),
+            Xbox360Root = null,
             GfwlRoot = Path.Combine(localAppData, "Microsoft", "XLive"),
             Rpcs3Root = Path.Combine(roaming, "rpcs3"),
             Ps4Root = Path.Combine(roaming, "shadPS4"),
             Ps5Root = Path.Combine(localAppData, "kyty"),
             XeniaRoot = Path.Combine(localAppData, "Xenia"),
-            EpicRoot = Path.Combine(localAppData, "EpicGamesLauncher"),
+            EpicRoot = Path.Combine(roaming, "NemirtingasEpicEmu"),
             GogRoot = Path.Combine(localAppData, "GOG.com", "Galaxy", "Applications"),
             UplayRoot = Path.Combine(localAppData, "Ubisoft Game Launcher", "spool"),
             UplayCacheRoot = Path.Combine(localAppData, "Ubisoft Game Launcher", "cache", "achievements"),
@@ -104,6 +101,9 @@ public sealed class PlatformSourceOptions
             LumaPlayWatcherEnabled = false,
             EaRoot = Path.Combine(localAppData, "Electronic Arts", "EA Desktop", "Logs"),
             LadxhdRoot = Path.Combine(localAppData, "Zelda_LA", "achievements"),
+            LichiiRoot = Path.Combine(roaming, "lichii"),
+            EglantineRoot = Path.Combine(roaming, "eglantine"),
+            Switch2RecompRoot = null,
             XboxEntraTenantId = "consumers"
         };
     }

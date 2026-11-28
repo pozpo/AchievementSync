@@ -6,12 +6,15 @@
     <EmbeddedResource Include="Assets\achievement-unlock.wav" />
     <EmbeddedResource Include="Assets\achievement-tick.wav" />
     <EmbeddedResource Include="Assets\achievement-arpeggio.wav" />
+    <EmbeddedResource Include="Assets\epic-games-achievement-sound.wav" />
     <PackageReference Include="System.Management" Version="10.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifier Condition="'$(IsPublishing)' == 'true' and '$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(IsPublishing)' == 'true'">true</SelfContained>
     <Version>1.3.0</Version>
     <AssemblyVersion>1.3.0.0</AssemblyVersion>
     <FileVersion>1.3.0</FileVersion>
@@ -29,10 +32,12 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>..\..\assets\AchievementSync.ico</ApplicationIcon>
     <!-- Single-file self-contained publish: one AchievementSync.exe with no external runtimes needed.
-         Publish with: dotnet publish src/AchievementSync.Desktop/AchievementSync.Desktop.csproj -c Release -r win-x64 /p:SelfContained=true /p:PublishSingleFile=true
+         Publish with: dotnet publish src/AchievementSync.Desktop/AchievementSync.Desktop.csproj -c Release -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
          WPF window chrome is explicitly set via WindowStyle="SingleBorderWindow" in MainWindow.xaml so the title bar renders. -->
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">$(ACHIEVEMENTSYNC_GITHUB_CLIENT_ID)</AchievementSyncGitHubClientId>
     <AchievementSyncGitHubClientId Condition="'$(AchievementSyncGitHubClientId)' == ''">Ov23liJMW4F1dg3IaWAd</AchievementSyncGitHubClientId>
   </PropertyGroup>

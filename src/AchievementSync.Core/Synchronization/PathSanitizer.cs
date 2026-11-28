@@ -70,6 +70,18 @@ public static class PathSanitizer
         return fullPath;
     }
 
+    /// <summary>Expands portable profile tokens recorded in a restoration manifest on this PC.</summary>
+    public static string? Expand(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        var expanded = Environment.ExpandEnvironmentVariables(path.Trim());
+        try { return Path.GetFullPath(expanded); }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
     private static string? TryGetFullPath(string path)
     {
         try { return Path.GetFullPath(path); }

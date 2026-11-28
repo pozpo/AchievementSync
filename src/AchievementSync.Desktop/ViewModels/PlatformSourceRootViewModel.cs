@@ -11,10 +11,11 @@ public sealed class PlatformSourceRootViewModel : INotifyPropertyChanged
     private readonly Action<string, string> _pathChanged;
     private string _path;
 
-    public PlatformSourceRootViewModel(string key, string label, string path, Action<string, string> pathChanged)
+    public PlatformSourceRootViewModel(string key, string label, string description, string path, Action<string, string> pathChanged)
     {
         Key = key;
         Label = label;
+        Description = description;
         _path = path;
         _pathChanged = pathChanged;
         BrowseCommand = new FolderBrowseCommand(this);
@@ -22,6 +23,7 @@ public sealed class PlatformSourceRootViewModel : INotifyPropertyChanged
 
     public string Key { get; }
     public string Label { get; }
+    public string Description { get; }
 
     public string Path
     {

@@ -1,4 +1,7 @@
 using System.Security.Cryptography;
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Text;
 using System.Net;
 using System.Net.Http;
 using System.IO;
@@ -31,6 +34,20 @@ try
     if (args.Contains("--playtime-wmi-fixture", StringComparer.OrdinalIgnoreCase))
     {
         await Task.Delay(TimeSpan.FromSeconds(3));
+        return 0;
+    }
+
+    if (args.Contains("--mapping-review-only", StringComparer.OrdinalIgnoreCase))
+    {
+        var mappingReviewOnlyCreated = RunOnStaThread(() =>
+        {
+            var dialog = new AchievementSync.Desktop.Views.MappingReviewDialog(
+                new MappingReviewViewModel(Array.Empty<SteamAppIdResolution>()));
+            return dialog.Content is System.Windows.Controls.Grid grid
+                && grid.Background is System.Windows.Media.Brush;
+        });
+        Check(mappingReviewOnlyCreated,
+            "Mapping Review dialog initializes on an STA thread with its canvas background resolved");
         return 0;
     }
 
@@ -804,9 +821,43 @@ try
             StringComparison.Ordinal),
         "game details catalog note wraps instead of overlapping the search field at narrow widths");
     var mainWindowXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "MainWindow.xaml"));
+    var mainViewModelSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
+        "src", "AchievementSync.Desktop", "ViewModels", "MainViewModel.cs"));
+    var platformMonitorSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
+        "src", "AchievementSync.Desktop", "Services", "PlatformSourceFileMonitor.cs"));
+    Check(mainWindowXaml.Contains("Text=\"{Binding Description}\"", StringComparison.Ordinal)
+        && mainWindowXaml.Contains("Save RA API key", StringComparison.Ordinal),
+        "Platforms folder paths explain the source data and the credential button describes what it actually saves");
+    Check(mainViewModelSource.Contains("(\"xenia\", \"Xenia\"", StringComparison.Ordinal)
+        && mainViewModelSource.Contains("case \"xenia\": options.XeniaRoot", StringComparison.Ordinal)
+        && mainViewModelSource.Contains("\"xenia\" => options.XeniaRoot", StringComparison.Ordinal)
+        && platformMonitorSource.Contains("\"xbox360\" or \"xenia\" => \"xbox360\"", StringComparison.Ordinal),
+        "the Xenia root is independently configurable and watched by the Xbox 360 adapter");
+    Check(platformMonitorSource.Contains("\"xboxpc\" => \"xboxpc\"", StringComparison.Ordinal)
+        && !platformMonitorSource.Contains("\"xblen\" or \"xboxpc\" => \"xbox\"", StringComparison.Ordinal),
+        "Xbox PC folder changes are routed to the separate Xbox Network platform scan");
+    Check(mainViewModelSource.Contains("Eglantine / playDB-CNT Switch 2 profile", StringComparison.Ordinal)
+        && mainViewModelSource.Contains("Nintendo Switch 2 Recomp ports", StringComparison.Ordinal)
+        && mainViewModelSource.Contains("case \"lichii\": options.LichiiRoot", StringComparison.Ordinal)
+        && mainViewModelSource.Contains("case \"switch2recomp\": options.Switch2RecompRoot", StringComparison.Ordinal),
+        "Switch 2 emulator, playDB-CNT profile, and recomp roots are exposed and wired in Platforms");
+    Check(platformMonitorSource.Contains("\".log\"", StringComparison.Ordinal)
+        && platformMonitorSource.Contains("\".trp\"", StringComparison.Ordinal)
+        && platformMonitorSource.Contains("\".key\"", StringComparison.Ordinal)
+        && platformMonitorSource.Contains("\".png\"", StringComparison.Ordinal)
+        && platformMonitorSource.Contains("\".py\"", StringComparison.Ordinal)
+        && platformMonitorSource.Contains("\".toml\"", StringComparison.Ordinal),
+        "platform monitoring rescans after EA/PS4 logs, trophy archives and keys, trophy icons, launcher scripts, and ReXGlue TOML changes");
+    var lumaMonitorSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName,
+        "src", "AchievementSync.Desktop", "Services", "LumaPlayRegistryMonitor.cs"));
+    Check(mainWindowXaml.Contains("Enable LumaPlay registry monitoring", StringComparison.Ordinal)
+        && mainViewModelSource.Contains("public bool LumaPlayWatcherEnabled", StringComparison.Ordinal)
+        && lumaMonitorSource.Contains("RegNotifyChangeKeyValue", StringComparison.Ordinal)
+        && !new AppSettings().LumaPlayWatcherEnabled,
+        "LumaPlay monitoring has an opt-in Platforms control, persists its setting, and uses native registry change notifications");
     var appXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "App.xaml"));
     var modernThemeXaml = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "Themes", "ModernTheme.xaml"));
-    const string libraryDescription = "Browse games found in enabled achievement folders. Filter by progress or sort by name and recent unlock.";
+    const string libraryDescription = "Browse games with at least one unlocked achievement. Filter by progress or sort by name and recent unlock.";
     var libraryDescriptionAt = mainWindowXaml.IndexOf(libraryDescription, StringComparison.Ordinal);
     var libraryDescriptionStart = libraryDescriptionAt < 0 ? -1 : mainWindowXaml.LastIndexOf("<TextBlock", libraryDescriptionAt, StringComparison.Ordinal);
     var libraryDescriptionEnd = libraryDescriptionAt < 0 ? -1 : mainWindowXaml.IndexOf("/>", libraryDescriptionAt, StringComparison.Ordinal);
@@ -959,6 +1010,11 @@ try
             enableDiagnostics: false);
         Check(libraryViewModel.IsGamesVisible && libraryViewModel.CurrentPage == "Games",
             "Game Library is the primary page when the application opens");
+        var desktopAssembly = typeof(MainViewModel).Assembly;
+        Check(desktopAssembly.GetManifestResourceNames().Any(name =>
+                name.EndsWith("epic-games-achievement-sound.wav", StringComparison.OrdinalIgnoreCase))
+            && libraryViewModel.NotificationSoundOptions.Any(option => option.Code == "EpicGames"),
+            "Epic Games achievement sound is embedded and selectable in notification settings");
         libraryViewModel.NavigationCommand.Execute("Activity");
         Check(libraryViewModel.IsActivityVisible,
             "Sync Activity navigation remains available without an Overview page");
@@ -988,8 +1044,15 @@ try
         ], true));
         var perfectCard = new GameCardViewModel(new GameProfile("2", "Beta", [],
             [new AchievementRecord("C", "C", null, true, 1700000300)], true));
+        var zeroUnlockCard = new GameCardViewModel(new GameProfile("3", "Gamma", [],
+            [new AchievementRecord("D", "D", null, false, 0)], true));
         libraryViewModel.Games.Add(completeCard);
         libraryViewModel.Games.Add(perfectCard);
+        libraryViewModel.Games.Add(zeroUnlockCard);
+        libraryViewModel.GamesView.Refresh();
+        Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().Count() == 2
+            && !libraryViewModel.GamesView.Cast<GameCardViewModel>().Any(game => game.AppId == "3"),
+            "Game Library hides profiles with no unlocked achievements");
         libraryViewModel.SelectedGameFilter = "Measurable progress";
         Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().Count() == 2,
             "Game Library progress filter retains games with measurable progress");
@@ -1007,6 +1070,12 @@ try
         libraryViewModel.SelectedGameFilter = "Needs information";
         Check(libraryViewModel.GamesView.IsEmpty,
             "Game Library exposes an empty state when no games match the selected filter");
+        zeroUnlockCard.ApplyLocalProfileUpdate(new GameProfile("3", "Gamma", [],
+            [new AchievementRecord("D", "D", null, true, 1700000400)], true));
+        libraryViewModel.SelectedGameFilter = "All games";
+        libraryViewModel.GamesView.Refresh();
+        Check(libraryViewModel.GamesView.Cast<GameCardViewModel>().Any(game => game.AppId == "3"),
+            "Game Library shows a game as soon as a confirmed unlock is detected");
         libraryViewModel.SelectedGameFilter = "All games";
         GameCardViewModel? openedGame = null;
         libraryViewModel.GameRequested += (_, game) => openedGame = game;
@@ -1182,6 +1251,25 @@ try
     Check(scanWithGeneratedCache.CandidateFiles == supportedScan.CandidateFiles
         && scanWithGeneratedCache.Games.Count == supportedScan.Games.Count,
         "generated metadata and overlapping source paths are excluded from duplicate scanning");
+
+    var steamMetadataDirectory = Path.Combine(metadataRoot, "1501750");
+    Directory.CreateDirectory(steamMetadataDirectory);
+    File.WriteAllText(Path.Combine(steamMetadataDirectory, "achievements.json"),
+        """{"STEAM_OLD":{"earned":false,"earned_time":0},"STEAM_NEW":{"earned":true,"earned_time":1700000400}}""");
+    var metadataLibrary = new LocalMetadataGameLibrary(metadataRoot);
+    var restoredProfiles = metadataLibrary.MergeProfiles([]);
+    var restoredSteamGame = restoredProfiles.SingleOrDefault(game => game.AppId == "1501750");
+    Check(restoredSteamGame is not null
+        && restoredSteamGame.Achievements.Single(item => item.ApiName == "STEAM_NEW").IsUnlocked == true,
+        "Steam appcache metadata AppIDs absent from normal source folders are restored into the Game Library");
+    var priorSteamProfile = new GameProfile("1501750", "Fixture Steam game", ["fixture://steam-profile"],
+        [new AchievementRecord("STEAM_OLD", "Old achievement", null, true, 1700000300)], false);
+    var mergedSteamGame = metadataLibrary.MergeProfiles([priorSteamProfile]).Single(game => game.AppId == "1501750");
+    Check(mergedSteamGame.Achievements.Single(item => item.ApiName == "STEAM_OLD").IsUnlocked == true
+        && mergedSteamGame.Achievements.Single(item => item.ApiName == "STEAM_OLD").UnlockTimeUnix == 1700000300
+        && mergedSteamGame.Achievements.Single(item => item.ApiName == "STEAM_NEW").IsUnlocked == true
+        && mergedSteamGame.SourceFiles.SequenceEqual(priorSteamProfile.SourceFiles),
+        "metadata library merge keeps existing unlocks and source associations while adding cached AppID progress");
 
     var catalogSettings = new AppSettings();
     catalogSettings.EnabledLocations["gse"] = false;
@@ -1508,6 +1596,7 @@ try
     var plannerRoot = Path.Combine(tempRoot, "metadata-planner");
     Directory.CreateDirectory(Path.Combine(plannerRoot, "730"));
     Directory.CreateDirectory(Path.Combine(plannerRoot, "733"));
+    Directory.CreateDirectory(Path.Combine(plannerRoot, "734"));
     Directory.CreateDirectory(Path.Combine(plannerRoot, "ViewerCatalog"));
     Directory.CreateDirectory(Path.Combine(plannerRoot, "noachievements"));
     await File.WriteAllBytesAsync(Path.Combine(plannerRoot, "730", "achievements.json"),
@@ -1515,22 +1604,34 @@ try
     File.WriteAllBytes(Path.Combine(plannerRoot, "730", "730.cover"), [0xFF, 0xD8, 0xFF]);
     File.WriteAllBytes(Path.Combine(plannerRoot, "730", "steam.json"), "{}"u8.ToArray());
     File.WriteAllBytes(Path.Combine(plannerRoot, "733", "steam.json"), "{}"u8.ToArray());
+    await File.WriteAllTextAsync(Path.Combine(plannerRoot, "733", "achievements.json"),
+        """{"ACH_LOCKED":{"earned":false,"earned_time":0}}""");
+    await File.WriteAllTextAsync(Path.Combine(plannerRoot, "734", "achievements.json"),
+        """{"ACH_NUMERIC":{"earned":1,"earned_time":1700000001}}""");
     var metadataPlan = MetadataAchievementExportPlanner.Build(plannerRoot);
-    Check(metadataPlan.Files.Count == 1 && metadataPlan.Failures.Count == 0
+    Check(metadataPlan.Files.Count == 2 && metadataPlan.Failures.Count == 0
         && metadataPlan.Files[0].AppId == "730"
         && metadataPlan.Files[0].RelativePath == "AppID/730/achievements.json"
-        && metadataPlan.Files[0].KnownStates == 2,
-        "the metadata planner exports only AppID-scoped achievements.json files, never covers or steam.json");
+        && metadataPlan.Files[0].KnownStates == 2
+        && metadataPlan.Files[1].AppId == "734",
+        "the metadata planner exports only AppID-scoped achievements.json files for games with an unlock, never covers or steam.json");
     await File.WriteAllTextAsync(Path.Combine(plannerRoot, "730", "achievements.json"), "{not json");
     var badMetadataPlan = MetadataAchievementExportPlanner.Build(plannerRoot);
-    Check(badMetadataPlan.Files.Count == 0 && badMetadataPlan.Failures.Count == 1 && badMetadataPlan.Failures[0].AppId == "730",
+    Check(badMetadataPlan.Files.All(file => file.AppId != "730")
+        && badMetadataPlan.Failures.Count == 1 && badMetadataPlan.Failures[0].AppId == "730",
         "an unreadable metadata achievements.json is reported as a per-AppID failure");
     Check(MetadataAchievementExportPlanner.Build(Path.Combine(tempRoot, "metadata-missing")).Files.Count == 0,
         "the metadata planner returns an empty list when the metadata directory does not exist");
+    Check(AchievementExportPlanner.Build([
+            new GameProfile("735", "No unlocks", [], [new AchievementRecord("LOCKED", "Locked", null, false, 0)], true)
+        ]).Count == 0,
+        "the profile export planner excludes games with no unlocked achievements");
 
-    // Bulk sync: one commit, only changed achievement files, per-AppID report. Covers and other files are never uploaded.
+    // Bulk sync: one commit, changed JSON plus empty viewer markers, per-AppID report. Covers and other files are never uploaded.
     var bulkRemoteHead = "commit-old";
     var bulkCalls = 0;
+    var bulkBlobContents = new List<string>();
+    var bulkTreePaths = new List<string>();
     const string bulkRemoteAchievement = "{\"ACH_KEEP\":{\"earned\":true,\"earned_time\":1700000000}}";
     using (var githubBulkHttp = new HttpClient(new TestHttpHandler((request, _) =>
     {
@@ -1543,10 +1644,23 @@ try
             return Task.FromResult(JsonResponse("""{"tree":{"sha":"tree-old"}}"""));
         if (request.Method == HttpMethod.Get && (path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal) || path.EndsWith("/contents/AppID/570/achievements.json", StringComparison.Ordinal)))
             return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(bulkRemoteAchievement)) + "\"}"));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/GOG.platform", StringComparison.Ordinal))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         if (request.Method == HttpMethod.Post && path.EndsWith("/git/blobs", StringComparison.Ordinal))
-        { bulkCalls++; return Task.FromResult(JsonResponse("""{"sha":"blob-new"}""")); }
+        {
+            using var blobBody = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            bulkBlobContents.Add(blobBody.RootElement.GetProperty("content").GetString() ?? string.Empty);
+            bulkCalls++;
+            return Task.FromResult(JsonResponse("""{"sha":"blob-new"}"""));
+        }
         if (request.Method == HttpMethod.Post && path.EndsWith("/git/trees", StringComparison.Ordinal))
-        { bulkCalls++; return Task.FromResult(JsonResponse("""{"sha":"tree-new"}""")); }
+        {
+            using var treeBody = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            bulkTreePaths.AddRange(treeBody.RootElement.GetProperty("tree").EnumerateArray()
+                .Select(entry => entry.GetProperty("path").GetString() ?? string.Empty));
+            bulkCalls++;
+            return Task.FromResult(JsonResponse("""{"sha":"tree-new"}"""));
+        }
         if (request.Method == HttpMethod.Post && path.EndsWith("/git/commits", StringComparison.Ordinal))
         { bulkCalls++; return Task.FromResult(JsonResponse("""{"sha":"commit-new"}""")); }
         if (request.Method.Method == "PATCH" && path.EndsWith("/git/refs/heads/user", StringComparison.Ordinal))
@@ -1559,12 +1673,22 @@ try
         var changedFile = new AchievementExportFile("AppID/730/achievements.json", "730", 2,
             """{"ACH_KEEP":{"earned":true,"earned_time":1700000000},"ACH_NEW":{"earned":true,"earned_time":1700000100}}""");
         var unchangedFile = new AchievementExportFile("AppID/570/achievements.json", "570", 1, bulkRemoteAchievement);
-        var bulkResult = await bulkClient.PushBulkAsync("synthetic-token", bulkTarget, [changedFile, unchangedFile]);
-        Check(bulkResult.Pushed && bulkResult.AchievementFilesPushed == 1 && bulkResult.AchievementFilesUnchanged == 1
-            && bulkResult.Entries.Count == 2,
-            "bulk metadata sync pushes only changed achievement JSON in one commit, reporting each file and never uploading covers");
-        Check(bulkResult.CommitUrl is not null && bulkCalls == 4 && bulkResult.Entries.Count(entry => entry.Action == "pushed") == 1,
-            "bulk metadata sync returns a commit URL and per-AppID write results");
+        var markerFile = new AchievementExportFile("AppID/730/GOG.platform", "730", 0, string.Empty);
+        var bulkResult = await bulkClient.PushBulkAsync("synthetic-token", bulkTarget, [changedFile, unchangedFile, markerFile]);
+        Check(bulkResult.Pushed && bulkResult.AchievementFilesPushed == 2 && bulkResult.AchievementFilesUnchanged == 1
+            && bulkResult.Entries.Count == 3,
+            "bulk sync pushes changed achievement JSON and empty platform markers in one commit, reporting unchanged files");
+        Check(bulkResult.CommitUrl is not null && bulkCalls == 5 && bulkResult.Entries.Count(entry => entry.Action == "pushed") == 2,
+            "bulk sync returns a commit URL and per-AppID write results");
+        Check(bulkBlobContents.Contains(string.Empty, StringComparer.Ordinal)
+            && bulkTreePaths.Contains("AppID/730/GOG.platform", StringComparer.Ordinal)
+            && bulkBlobContents.Any(content => content.Contains("ACH_NEW", StringComparison.Ordinal)),
+            "bulk sync creates a zero-byte platform marker blob and includes its path in the GitHub tree");
+        var markerPreviewViewModel = new ExportPreviewFileViewModel(markerFile, newUnlocks: 0);
+        Check(markerPreviewViewModel.IsEmptyMarker
+            && markerPreviewViewModel.Summary.Contains("uploaded as 0 bytes", StringComparison.Ordinal)
+            && markerPreviewViewModel.ContentHint.Contains("zero-byte file", StringComparison.Ordinal),
+            "GitHub preview explains that platform marker files intentionally have empty content");
     }
 
     // INI roundtrip: viewer JSON can be converted back to INI and parsed again without losing states.
@@ -1672,6 +1796,116 @@ try
 
     var itemWithSize = new SaveBackupItem("4115450", "AppID/4115450/save/real.sav", "C:\\nonexistent.sav", "sha", null, 12345);
     Check(itemWithSize.SizeBytes == 12345, "SaveBackupItem preserves discovery file size in SizeBytes without reading disk");
+
+    // Platform roots contribute save backups even when their achievement adapters return no game snapshots.
+    var configuredXeniaRoot = Path.Combine(tempRoot, "configured-xenia");
+    var configuredSavePath = Path.Combine(configuredXeniaRoot, "GameOne", "Save", "slot.sav");
+    Directory.CreateDirectory(Path.GetDirectoryName(configuredSavePath)!);
+    File.WriteAllBytes(configuredSavePath, [7, 8, 9]);
+    var configuredPlatformOptions = new PlatformSourceOptions { XeniaRoot = configuredXeniaRoot };
+    var configuredPlatformSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync([], configuredPlatformOptions);
+    Check(configuredPlatformSaves.Count == 1
+        && configuredPlatformSaves[0].SourcePath == configuredSavePath
+        && configuredPlatformSaves[0].RootKey == "platform:xenia"
+        && configuredPlatformSaves[0].BackupFolder?.StartsWith("PlatformSave/xbox360/xenia/", StringComparison.Ordinal) == true,
+        "configured emulator save roots are scanned without requiring an achievement snapshot");
+    var recordedCustomPlatformFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        "PreviousXeniaRoot", "GameOne", "Save", "slot.sav");
+    Check(SaveFileDiscoverer.ResolveLocalPath("platform:xenia", "GameOne", Path.Combine("GameOne", "Save", "slot.sav"),
+            PathSanitizer.Sanitize(recordedCustomPlatformFile), configuredPlatformOptions)
+        == Path.GetFullPath(recordedCustomPlatformFile),
+        "platform save restore retains the exact recorded root when the new PC has a different configured root");
+
+    // Native title-folder roots include %APPDATA%\\<title>\\Save.
+    var originalAppData = Environment.GetEnvironmentVariable("APPDATA");
+    var isolatedAppData = Path.Combine(tempRoot, "isolated-appdata");
+    var roamingSavePath = Path.Combine(isolatedAppData, "NativeTitle", "Save", "profile.sav");
+    Directory.CreateDirectory(Path.GetDirectoryName(roamingSavePath)!);
+    File.WriteAllBytes(roamingSavePath, [4, 5, 6]);
+    try
+    {
+        Environment.SetEnvironmentVariable("APPDATA", isolatedAppData);
+        var nativeSaves = await SaveFileDiscoverer.DiscoverAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["730"] = "NativeTitle" });
+        Check(nativeSaves.Any(save => save.SourcePath == roamingSavePath && save.RootKey == "AppData Roaming Save"),
+            "native save discovery scans %APPDATA%\\<title>\\Save");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable("APPDATA", originalAppData);
+    }
+
+    // Lichii profile save IDs and optional explicitly present achievement JSON are detected without inventing a native API.
+    var lichiiRoot = Path.Combine(tempRoot, "lichii-profile");
+    var switchTitleId = "0100A1B2C3D4E500";
+    var switchTitleSave = Path.Combine(lichiiRoot, "nand", "user", "save", switchTitleId);
+    Directory.CreateDirectory(switchTitleSave);
+    File.WriteAllBytes(Path.Combine(switchTitleSave, "user.sav"), [1, 3, 5]);
+    File.WriteAllText(Path.Combine(switchTitleSave, "achievements.json"), "{\"SWITCH_TEST\":{\"earned\":true,\"earned_time\":1700000000}}");
+    var switchOptions = new PlatformSourceOptions { LichiiRoot = lichiiRoot };
+    var switchAdapter = new Switch2EmulatorDataAdapter(switchOptions);
+    var switchCollection = await switchAdapter.CollectAsync(switchOptions);
+    var switchProfileSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync(switchCollection.Games, switchOptions);
+    Check(switchCollection.Games.Any(game => game.GameId == switchTitleId && game.Achievements.Any(achievement => achievement.Id == "SWITCH_TEST" && achievement.Earned))
+        && switchProfileSaves.Any(save => save.SourcePath.EndsWith("user.sav", StringComparison.Ordinal)),
+        "Lichii Switch 2 profile save data and explicitly supplied achievement JSON are detected");
+
+    // Recomp port profile\\save folders are detected even when the folder contains no achievements file.
+    var switchRecompRoot = Path.Combine(tempRoot, "switch2-recomp");
+    var ocarinaSavePath = Path.Combine(switchRecompRoot, "perfil", "save", "ocarina.sav");
+    Directory.CreateDirectory(Path.GetDirectoryName(ocarinaSavePath)!);
+    File.WriteAllBytes(ocarinaSavePath, [2, 4, 6]);
+    var switchRecompOptions = new PlatformSourceOptions { Switch2RecompRoot = switchRecompRoot };
+    var switchRecompAdapter = new OcarinaRecompDataAdapter(switchRecompOptions);
+    var recompCollection = await switchRecompAdapter.CollectAsync(switchRecompOptions);
+    var recompSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync(recompCollection.Games, switchRecompOptions);
+    Check(recompCollection.Games.Any(game => game.GameId == "ocarina-recomp")
+        && recompSaves.Any(save => save.SourcePath == ocarinaSavePath),
+        "Switch 2 recomp profile\\save files are detected for Ocarina-style ports");
+
+    // A clean machine's empty AppID filter enumerates repository manifests and reconstructs original save paths.
+    var restoreRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GSE Saves", "730");
+    var remoteManifest = RestorationManifest.Create("730", "json",
+        "%APPDATA%\\GSE Saves\\730\\achievements.json", "achievements.json",
+        [new ManifestSaveEntry("GSE Saves", "save.dat", "%APPDATA%\\GSE Saves\\730\\remote\\save.dat",
+            "AppID/730/save/remote/save.dat", 3, "sha256")], "AppID/730").ToJson();
+    var encodedManifest = Convert.ToBase64String(Encoding.UTF8.GetBytes(remoteManifest));
+    var encodedAchievements = Convert.ToBase64String(Encoding.UTF8.GetBytes("{\"ACH_REMOTE\":{\"earned\":true,\"earned_time\":1700000000}}"));
+    using (var restoreHttp = new HttpClient(new TestHttpHandler((request, _) =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/ref/heads/user", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"object":{"sha":"restore-head"}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/commits/restore-head", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"tree":{"sha":"restore-tree"}}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/git/trees/restore-tree", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("""{"truncated":false,"tree":[{"path":"AppID/730/restoration-manifest.json","type":"blob"},{"path":"AppID/730/achievements.json","type":"blob"},{"path":"AppID/730/save/remote/save.dat","type":"blob"}]}"""));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/restoration-manifest.json", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + encodedManifest + "\"}"));
+        if (request.Method == HttpMethod.Get && path.EndsWith("/contents/AppID/730/achievements.json", StringComparison.Ordinal))
+            return Task.FromResult(JsonResponse("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + encodedAchievements + "\"}"));
+        throw new InvalidOperationException($"Unexpected synthetic restore request: {request.Method} {path}");
+    })))
+    {
+        var restoreClient = new GitHubAchievementSyncClient(restoreHttp);
+        var restorePlans = await restoreClient.PullSaveBackupAsync("synthetic-token",
+            new GitHubSyncTarget("pozpo", "viewer", "user"), Array.Empty<string>(), new PlatformSourceOptions());
+        Check(restorePlans.Count == 1
+            && restorePlans[0].AppId == "730"
+            && restorePlans[0].AchievementsJson?.Contains("ACH_REMOTE", StringComparison.Ordinal) == true
+            && restorePlans[0].Saves.Count == 1
+            && restorePlans[0].Saves[0].TargetPath == Path.Combine(restoreRoot, "remote", "save.dat"),
+            "GitHub restore discovers remote achievements and resolves saves to their recorded local paths on a clean PC");
+    }
+
+    var restoreSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "ViewModels", "MainViewModel.cs"));
+    Check(restoreSource.Contains("Array.Empty<string>(), BuildPlatformSourceOptions()", StringComparison.Ordinal)
+        && restoreSource.Contains("FileMode.CreateNew", StringComparison.Ordinal)
+        && restoreSource.Contains("kept existing", StringComparison.Ordinal),
+        "GitHub restore enumerates all branch backups on a fresh PC and creates files without overwriting local data");
+    Check(mainWindowXaml.Contains("empty library", StringComparison.Ordinal)
+        && mainWindowXaml.Contains("Existing files are kept.", StringComparison.Ordinal),
+        "Sync Activity explains clean-PC restore behavior and that existing local files are preserved");
 
     var appSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "App.xaml.cs"));
     Check(appSource.Contains("if (!StartInTray)", StringComparison.Ordinal) && appSource.Contains("mainWindow.InitializeAppAsync()", StringComparison.Ordinal),
@@ -1902,6 +2136,8 @@ try
     var enablerTargetControl = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "Controls", "AchievementEnablerControl.xaml.cs"));
     Check(!enablerTargetControl.Contains("new(EnablerTarget.SteamColdLoader,", StringComparison.Ordinal),
         "Achievement Enabler tab no longer offers standalone ColdLoader");
+    Check(enablerTargetControl.Contains("new(EnablerTarget.UplayLumaPlay,", StringComparison.Ordinal),
+        "Achievement Enabler tab exposes the supported LumaPlay target");
 
     // 8. Epic .egstore local namespace detection
     var mockEgStoreGame = Path.Combine(tempRoot, "MockEgStoreGame");
@@ -2022,13 +2258,20 @@ try
     var v130CoreProject = File.ReadAllText(Path.Combine(v130CoreRoot, "AchievementSync.Core.csproj"));
     var v130DesktopProject = File.ReadAllText(Path.Combine(v130DesktopRoot, "AchievementSync.Desktop.csproj"));
     Check(v130CoreProject.Contains("<Version>1.3.0</Version>", StringComparison.Ordinal)
+        && v130CoreProject.Contains("<DebugType>embedded</DebugType>", StringComparison.Ordinal)
         && v130DesktopProject.Contains("<Version>1.3.0</Version>", StringComparison.Ordinal)
         && v130DesktopProject.Contains("<AssemblyVersion>1.3.0.0</AssemblyVersion>", StringComparison.Ordinal)
         && v130DesktopProject.Contains("<FileVersion>1.3.0</FileVersion>", StringComparison.Ordinal)
         && v130DesktopProject.Contains("<InformationalVersion>1.3.0</InformationalVersion>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<RuntimeIdentifier Condition=\"'$(IsPublishing)' == 'true' and '$(RuntimeIdentifier)' == ''\">win-x64</RuntimeIdentifier>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<SelfContained Condition=\"'$(IsPublishing)' == 'true'\">true</SelfContained>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<PublishSingleFile>true</PublishSingleFile>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<DebugType>embedded</DebugType>", StringComparison.Ordinal)
+        && v130DesktopProject.Contains("<CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>", StringComparison.Ordinal)
         && !v130CoreProject.Contains("1.2.0", StringComparison.Ordinal)
         && !v130DesktopProject.Contains("1.2.0", StringComparison.Ordinal),
-        "both project files declare 1.3.0 and no stale 1.2.0 version remains");
+        "both projects declare 1.3.0 and desktop publish defaults to a self-contained single-file win-x64 executable");
     Check(File.ReadAllText(Path.Combine(v130DesktopRoot, "Services", "GitHubReleaseUpdateService.cs")).Contains("AchievementSync-Update/1.3.0", StringComparison.Ordinal)
         && File.ReadAllText(Path.Combine(v130DesktopRoot, "Services", "SteamCommunityCatalogClient.cs")).Contains("AchievementSync/1.3.0", StringComparison.Ordinal),
         "HTTP user-agent strings advertise version 1.3.0");
@@ -2038,17 +2281,19 @@ try
     {
         System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "MainWindow.xaml")),
         System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "Themes", "ModernTheme.xaml")),
-        System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "App.xaml"))
+        System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "App.xaml")),
+        System.Xml.Linq.XDocument.Load(Path.Combine(v130DesktopRoot, "Views", "MappingReviewDialog.xaml"))
     };
     Check(v130Documents.All(document => document.Root is not null),
-        "MainWindow.xaml, ModernTheme.xaml and App.xaml are well-formed XML");
+        "MainWindow.xaml, ModernTheme.xaml, App.xaml and MappingReviewDialog.xaml are well-formed XML");
 
     var v130KnownKeys = v130Documents
         .SelectMany(document => document.Descendants())
         .Select(element => (string?)element.Attribute(v130XamlNamespace + "Key"))
         .OfType<string>()
         .ToHashSet(StringComparer.Ordinal);
-    var v130UnresolvedResources = new[] { mainWindowXaml, modernThemeXaml }
+    var mappingReviewXaml = File.ReadAllText(Path.Combine(v130DesktopRoot, "Views", "MappingReviewDialog.xaml"));
+    var v130UnresolvedResources = new[] { mainWindowXaml, modernThemeXaml, mappingReviewXaml }
         .SelectMany(text => System.Text.RegularExpressions.Regex
             .Matches(text, @"\{(?:StaticResource|DynamicResource)\s+([\w.]+)\}")
             .Select(match => match.Groups[1].Value))
@@ -2056,7 +2301,11 @@ try
         .Where(key => !v130KnownKeys.Contains(key))
         .ToArray();
     Check(v130UnresolvedResources.Length == 0,
-        "every resource key used by MainWindow and ModernTheme resolves (unresolved: " + string.Join(", ", v130UnresolvedResources) + ")");
+        "every resource key used by MainWindow, ModernTheme and Mapping Review resolves (unresolved: " + string.Join(", ", v130UnresolvedResources) + ")");
+    Check(mappingReviewXaml.Contains("<Grid Margin=\"22\" Background=\"{StaticResource Modern.CanvasBrush}\"", StringComparison.Ordinal)
+        && !System.Text.RegularExpressions.Regex.IsMatch(mappingReviewXaml,
+            "<Window\\b[^>]*Background=\"\\{StaticResource Modern\\.CanvasBrush\\}"),
+        "Mapping Review resolves its canvas brush from content after its window resources load");
 
     var v130ImplicitThemeStyles = v130Documents[1].Root!.Elements()
         .Where(element => element.Name.LocalName == "Style" && element.Attribute(v130XamlNamespace + "Key") is null)
@@ -2157,6 +2406,16 @@ try
     foreach (var outcome in v130ThemeOutcomes)
         Check(outcome.Passed, outcome.Description);
 
+    var mappingReviewDialogCreated = RunOnStaThread(() =>
+    {
+        var dialog = new AchievementSync.Desktop.Views.MappingReviewDialog(
+            new MappingReviewViewModel(Array.Empty<SteamAppIdResolution>()));
+        return dialog.Content is System.Windows.Controls.Grid grid
+            && grid.Background is System.Windows.Media.Brush;
+    });
+    Check(mappingReviewDialogCreated,
+        "Mapping Review dialog initializes on an STA thread with its canvas background resolved");
+
     // =========================================================================
     // NEW PLATFORMS & FEATURES VERIFICATION (v1.3.0 Complete Platform Support)
     // =========================================================================
@@ -2243,27 +2502,7 @@ try
         blacklistedKeys: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "epic:epic-hl2" });
     Check(blacklistedRes.IsBlacklisted, "SteamAppIdResolver propagates blacklist status correctly");
 
-    // 2. Epic Games EAS OAuth Client & Stored Credential
-    var pkce = EpicAuthClient.CreatePkceChallenge();
-    Check(!string.IsNullOrWhiteSpace(pkce.CodeVerifier) && !string.IsNullOrWhiteSpace(pkce.CodeChallenge) && !string.IsNullOrWhiteSpace(pkce.State),
-        "EpicAuthClient generates standard cryptographic PKCE challenge and state");
-    var authUri = EpicAuthClient.BuildAuthorizeUri("test-client-id", "http://localhost:59123/callback", pkce);
-    Check(authUri.ToString().StartsWith("https://www.epicgames.com/id/authorize?", StringComparison.Ordinal)
-        && authUri.ToString().Contains("client_id=test-client-id", StringComparison.Ordinal)
-        && authUri.ToString().Contains("code_challenge=" + Uri.EscapeDataString(pkce.CodeChallenge), StringComparison.Ordinal),
-        "EpicAuthClient builds official EAS authorize URI with user-supplied client ID and PKCE");
-    var epicCred = new EpicStoredCredential("test-access-token", "test-refresh-token", "acc-123", "EpicPlayer", DateTimeOffset.UtcNow.AddHours(2));
-    var serializedEpicCred = epicCred.Serialize();
-    var deserializedEpicCred = EpicStoredCredential.Parse(serializedEpicCred);
-    Check(deserializedEpicCred is not null
-        && deserializedEpicCred.AccessToken == "test-access-token"
-        && deserializedEpicCred.AccountId == "acc-123"
-        && !deserializedEpicCred.NeedsRefresh(),
-        "EpicStoredCredential survives secure serialization and correctly evaluates token expiry");
-    Check(new EpicStoredCredential("expired-tok", null, null, null, DateTimeOffset.UtcNow.AddMinutes(1)).NeedsRefresh(),
-        "EpicStoredCredential signals refresh requirement within the 2-minute safety window");
-
-    // 3. Xbox Network / Entra Device Code Flow & Stored Credential
+    // 2. Xbox Network / Entra Device Code Flow & Stored Credential
     var xboxCred = new XboxStoredCredential("ms-tok", "ms-ref", "consumers", DateTimeOffset.UtcNow.AddHours(4), "xsts-tok-xyz", "123456", "2533274890", "GamerX", DateTimeOffset.UtcNow.AddHours(2));
     var serializedXboxCred = xboxCred.Serialize();
     var deserializedXboxCred = XboxStoredCredential.Parse(serializedXboxCred);
@@ -2485,6 +2724,154 @@ try
         && recompCollect.Games.Any(g => g.Platform == "recomp" && g.GameId == "LADXHD" && g.Achievements.Any(a => a.Id == "ACH_SWORD" && a.Earned))
         && recompCollect.Games.Any(g => g.Platform == "recomp" && g.GameId == "PS3Game" && g.Achievements.Any(a => a.Id == "ACH_SWORD" && a.Earned)),
         "RecompDataAdapter collects LADXHD and PS3Recomp achievements seamlessly");
+
+    var unchartedPort = Path.Combine(recompRoot, "Uncharted Collection");
+    Directory.CreateDirectory(unchartedPort);
+    File.WriteAllText(Path.Combine(unchartedPort, "run.py"), "# launcher fixture");
+    foreach (var game in new[] { "CUSA00001", "CUSA00002", "CUSA00003" })
+    {
+        var xmlDir = Path.Combine(unchartedPort, game, "TrophyFiles", "Xml");
+        var iconDir = Path.Combine(unchartedPort, game, "TrophyFiles", "Icons");
+        Directory.CreateDirectory(xmlDir);
+        Directory.CreateDirectory(iconDir);
+        File.WriteAllText(Path.Combine(xmlDir, "TROP.XML"), $"""
+            <trophyconf><npcommid>NPWR00001_00</npcommid><trophies>
+              <trophy id="3" ttype="G" unlockstate="0" timestamp="0"><name>Chapter</name><detail>Finish a chapter</detail></trophy>
+            </trophies></trophyconf>
+            """);
+        File.WriteAllText(Path.Combine(iconDir, "TROP003.PNG"), "icon fixture");
+    }
+    File.WriteAllText(Path.Combine(unchartedPort, "launcher.log"),
+        "2026-11-27T12:34:56Z CUSA00002 unlocked trophy: 3");
+    var ps4RecompCollect = await recompAdapter.CollectAsync(recompOptions);
+    var unchartedGames = ps4RecompCollect.Games.Where(game => game.Version == "ps4recomp").ToArray();
+    Check(unchartedGames.Length == 3
+        && unchartedGames.Select(game => game.GameId).OrderBy(id => id, StringComparer.Ordinal).SequenceEqual(
+            new[] { "CUSA00001", "CUSA00002", "CUSA00003" }),
+        "PS4 Recomp keeps separate trophy lists as separate configs for collection ports");
+    var unchartedTwo = unchartedGames.Single(game => game.GameId == "CUSA00002");
+    Check(unchartedTwo.Achievements.Single().Earned
+        && unchartedTwo.Achievements.Single().EarnedTimeUnix == 1795782896
+        && unchartedTwo.Achievements.Single().IconPath?.EndsWith("TROP003.PNG", StringComparison.OrdinalIgnoreCase) == true,
+        "PS4 Recomp merges launcher unlock logs, normalizes ISO timestamps, and keeps local trophy icons");
+    Check(!unchartedGames.Single(game => game.GameId == "CUSA00001").Achievements.Single().Earned,
+        "PS4 Recomp does not leak an unlock from one collection trophy list into another");
+
+    var encryptedPs4Port = Path.Combine(recompRoot, "Encrypted PS4 Fixture");
+    var encryptedPs4Game = Path.Combine(recompRoot, "Encrypted PS4 Game Data", "CUSA20001");
+    var encryptedPs4TrophyDir = Path.Combine(encryptedPs4Game, "sce_sys", "trophy");
+    Directory.CreateDirectory(encryptedPs4Port);
+    Directory.CreateDirectory(encryptedPs4TrophyDir);
+    File.WriteAllText(Path.Combine(encryptedPs4Port, "run.py"), "# launcher fixture");
+    File.WriteAllText(Path.Combine(encryptedPs4Port, "settings.json"), "{\"game_dir\":\"../Encrypted PS4 Game Data/CUSA20001\"}");
+    var npcommid = "NPWR12345_00";
+    var rawTrophyXml = "<trophyconf><title-name>Encrypted Trophy Fixture</title-name><trophies>"
+        + "<trophy id=\"0\" ttype=\"B\" hidden=\"no\"><name>First trophy</name><detail>Fixture description</detail></trophy>"
+        + "</trophies></trophyconf>";
+    var encryptedEsfm = EncryptPs4EsfmFixture(npcommid, rawTrophyXml);
+    var encryptedTrpPath = Path.Combine(encryptedPs4TrophyDir, "trophy00.trp");
+    File.WriteAllBytes(encryptedTrpPath, BuildPs4TrpFixture("TROP_01.ESFM", encryptedEsfm));
+    File.WriteAllBytes(Path.Combine(encryptedPs4Game, "sce_sys", "npbind.dat"), BuildPs4NpbindFixture(npcommid, 0));
+    var rawArchive = Ps4TrophyArchiveReader.Read(encryptedTrpPath, Path.Combine(encryptedPs4Game, "sce_sys", "npbind.dat"));
+    Check(rawArchive.NpCommunicationId == npcommid && rawArchive.Title == "Encrypted Trophy Fixture"
+        && rawArchive.Achievements.Single().Id == "0"
+        && rawArchive.Achievements.Single().Name == "First trophy"
+        && rawArchive.Achievements.Single().TrophyType == "bronze",
+        "PS4 Recomp decrypts bounded TRP/ESFM trophy metadata through its npbind slot");
+    var rawPs4Collect = await recompAdapter.CollectAsync(recompOptions);
+    var rawPs4Game = rawPs4Collect.Games.Single(game => game.GameId == "CUSA20001");
+    Check(rawPs4Game.Version == "ps4recomp" && rawPs4Game.Title == "Encrypted Trophy Fixture"
+        && rawPs4Game.Achievements.Single().Name == "First trophy",
+        "PS4 Recomp follows a launcher game_dir to an external original-game trophy set");
+
+    var overridePs4Port = Path.Combine(recompRoot, "Trophy Key Override Port");
+    var overridePs4Game = Path.Combine(recompRoot, "Trophy Key Override Data", "CUSA20002");
+    var overrideTrophyDir = Path.Combine(overridePs4Game, "sce_sys", "trophy");
+    var overrideKey = "0A1B2C3D4E5F60718293A4B5C6D7E8F9";
+    Directory.CreateDirectory(overridePs4Port);
+    Directory.CreateDirectory(overrideTrophyDir);
+    File.WriteAllText(Path.Combine(overridePs4Port, "run.py"), "# launcher fixture");
+    File.WriteAllText(Path.Combine(overridePs4Port, "settings.json"), "{\"game_dir\":\"../Trophy Key Override Data/CUSA20002\"}");
+    File.WriteAllText(Path.Combine(overridePs4Port, "trophy.key"), overrideKey);
+    var overrideEsfm = EncryptPs4EsfmFixture(npcommid, rawTrophyXml, overrideKey);
+    var overrideTrpPath = Path.Combine(overrideTrophyDir, "trophy00.trp");
+    var overrideBindingPath = Path.Combine(overridePs4Game, "sce_sys", "npbind.dat");
+    File.WriteAllBytes(overrideTrpPath, BuildPs4TrpFixture("TROP_01.ESFM", overrideEsfm));
+    File.WriteAllBytes(overrideBindingPath, BuildPs4NpbindFixture(npcommid, 0));
+    var overrideArchive = Ps4TrophyArchiveReader.Read(overrideTrpPath, overrideBindingPath,
+        Path.Combine(overridePs4Port, "trophy.key"));
+    Check(overrideArchive.Title == "Encrypted Trophy Fixture",
+        "PS4 TRP reader lets a valid local trophy.key override the built-in retail key");
+    var overridePs4Collect = await recompAdapter.CollectAsync(recompOptions);
+    Check(overridePs4Collect.Games.Any(game => game.GameId == "CUSA20002"
+        && game.Achievements.Single().Name == "First trophy"),
+        "PS4 Recomp finds trophy.key beside the launcher when importing encrypted original-game data");
+
+    var malformedTrpPath = Path.Combine(encryptedPs4TrophyDir, "trophy01.trp");
+    File.WriteAllBytes(malformedTrpPath, new byte[96]);
+    try
+    {
+        Ps4TrophyArchiveReader.Read(malformedTrpPath, Path.Combine(encryptedPs4Game, "sce_sys", "npbind.dat"));
+        Check(false, "PS4 TRP reader rejects invalid magic instead of accepting corrupt data");
+    }
+    catch (InvalidDataException)
+    {
+        Check(true, "PS4 TRP reader rejects invalid magic instead of accepting corrupt data");
+    }
+    var malformedPs4XmlPath = Path.Combine(encryptedPs4TrophyDir, "trophy02.trp");
+    File.WriteAllBytes(malformedPs4XmlPath, BuildPs4TrpFixture("TROP.SFM", Encoding.UTF8.GetBytes("<trophyconf>")));
+    try
+    {
+        Ps4TrophyArchiveReader.Read(malformedPs4XmlPath);
+        Check(false, "PS4 TRP reader rejects malformed embedded XML as a source diagnostic");
+    }
+    catch (InvalidDataException)
+    {
+        Check(true, "PS4 TRP reader rejects malformed embedded XML as a source diagnostic");
+    }
+
+    var pythonPs4Port = Path.Combine(recompRoot, "Python Launcher PS4 Fixture");
+    var pythonPs4Game = Path.Combine(recompRoot, "Python PS4 Game Data", "CUSA30001");
+    Directory.CreateDirectory(pythonPs4Port);
+    var pythonPs4XmlDir = Path.Combine(pythonPs4Game, "TrophyFiles", "Xml");
+    Directory.CreateDirectory(pythonPs4XmlDir);
+    File.WriteAllText(Path.Combine(pythonPs4Port, "run.py"), "GAME_DIR = \"../Python PS4 Game Data/CUSA30001\"\n");
+    File.WriteAllText(Path.Combine(pythonPs4XmlDir, "TROP.XML"),
+        "<trophyconf><trophies><trophy id=\"1\" ttype=\"S\" unlockstate=\"0\"><name>Python path trophy</name></trophy></trophies></trophyconf>");
+    var pythonPathCollect = await recompAdapter.CollectAsync(recompOptions);
+    Check(pythonPathCollect.Games.Any(game => game.GameId == "CUSA30001"
+        && game.Achievements.Any(item => item.Id == "1" && item.Name == "Python path trophy")),
+        "PS4 Recomp reads a static GAME_DIR from run.py without executing the launcher");
+
+    var unknownUnlockPort = Path.Combine(recompRoot, "Unknown Trophy Port");
+    var unknownUnlockXml = Path.Combine(unknownUnlockPort, "TrophyFiles", "Xml");
+    Directory.CreateDirectory(unknownUnlockXml);
+    File.WriteAllText(Path.Combine(unknownUnlockPort, "run.py"), "# launcher fixture");
+    File.WriteAllText(Path.Combine(unknownUnlockXml, "TROP.XML"),
+        "<trophyconf><trophies><trophy id=\"1\" ttype=\"B\" unlockstate=\"0\"><name>Known trophy</name></trophy></trophies></trophyconf>");
+    File.WriteAllText(Path.Combine(unknownUnlockPort, "launcher.log"), "unlocked trophy: 999");
+    var unknownUnlockCollect = await recompAdapter.CollectAsync(recompOptions);
+    var unknownUnlockGame = unknownUnlockCollect.Games.Single(game => game.GameId == "Unknown Trophy Port");
+    Check(unknownUnlockGame.Achievements.Count == 1 && unknownUnlockGame.Achievements[0].Id == "1"
+        && unknownUnlockCollect.Messages.Any(message => message.Contains("absent from the trophy schema", StringComparison.OrdinalIgnoreCase)),
+        "PS4 Recomp ignores launcher unlock IDs that are absent from the discovered trophy schema");
+
+    var ambiguousPort = Path.Combine(recompRoot, "Ambiguous Collection");
+    Directory.CreateDirectory(ambiguousPort);
+    File.WriteAllText(Path.Combine(ambiguousPort, "run.py"), "# launcher fixture");
+    foreach (var game in new[] { "CUSA10001", "CUSA10002" })
+    {
+        var xmlDir = Path.Combine(ambiguousPort, game, "TrophyFiles", "Xml");
+        Directory.CreateDirectory(xmlDir);
+        File.WriteAllText(Path.Combine(xmlDir, "TROP.XML"), "<trophyconf><trophies><trophy id=\"1\" unlockstate=\"0\"><name>One</name></trophy></trophies></trophyconf>");
+    }
+    File.WriteAllText(Path.Combine(ambiguousPort, "launcher.log"), "2026-11-27T12:34:56Z unlocked trophy: 1");
+    var ambiguousCollect = await recompAdapter.CollectAsync(recompOptions);
+    Check(ambiguousCollect.Games.Count(game => game.Version == "ps4recomp"
+            && game.GameId is "CUSA10001" or "CUSA10002") == 2
+        && ambiguousCollect.Games.All(game => game.GameId != "Ambiguous Collection")
+        && ambiguousCollect.Messages.Any(message => message.Contains("ambiguous launcher log", StringComparison.OrdinalIgnoreCase)),
+        "PS4 Recomp skips launcher logs that cannot be assigned safely to one list in a multi-game collection");
     Check(Xbox360DataAdapter.RecompRules.Length == 16,
         "Xbox360DataAdapter declares all 16 official game-specific Xbox 360 recomp rules");
 
@@ -2533,6 +2920,11 @@ try
     Check(exportFiles.Any(f => f.RelativePath == "AppID/570/blacklist" && f.Json.Length == 0),
         "AchievementExportPlanner adds empty blacklist marker for blacklisted game");
 
+    var ps4RecompResolution = resSource2 with { SourceVersion = "ps4recomp" };
+    var ps4RecompMarkerFiles = AchievementExportPlanner.BuildFromResolutions([ps4RecompResolution]);
+    Check(ps4RecompMarkerFiles.Any(f => f.RelativePath == "AppID/730/PS4Recomp.platform" && f.Json.Length == 0),
+        "AchievementExportPlanner identifies PS4 Recomp sources with their own platform marker");
+
     // Proving existing unlocks and larger valid files are never lost or downgraded
     var existingLargerJson = """
         {
@@ -2548,6 +2940,65 @@ try
         "AchievementExportPlanner never loses existing unlocks absent from incoming partial snapshot");
     Check(mergedDoc.RootElement.TryGetProperty("ACH_1", out var m1) && m1.GetProperty("earned").GetBoolean() && m1.GetProperty("earned_time").GetInt64() == 1700001000L,
         "AchievementExportPlanner never downgrades existing earned state or timestamps");
+
+    var platformMetadata = new AchievementExportFile(
+        "AppID/730/achievements.json", "730", 1,
+        """{"BASE_ACHIEVEMENT":{"earned":true,"earned_time":1600000000}}""");
+    var platformSnapshots = new[]
+    {
+        new PlatformGameSnapshot("epic", "epic-ns", "Mapped Platform Game", "", [
+            new PlatformAchievement("ACH_1", Earned: true, EarnedTimeUnix: 1700001000),
+            new PlatformAchievement("UNKNOWN_STATE", Earned: true, EarnedKnown: false)
+        ]),
+        new PlatformGameSnapshot("gog", "gog-42", "Mapped Platform Game", "", [
+            new PlatformAchievement("ACH_1", Earned: false),
+            new PlatformAchievement("ACH_2", Earned: true, EarnedTimeUnix: 1700002000)
+        ]),
+        new PlatformGameSnapshot("recomp", "CUSA00730", "Mapped Platform Game", "", [
+            new PlatformAchievement("ACH_3", Earned: true, EarnedTimeUnix: 1700003000)
+        ], "ps4recomp"),
+        new PlatformGameSnapshot("epic", "zero-unlock-game", "No unlocks", "", [
+            new PlatformAchievement("LOCKED_ONLY", Earned: false)
+        ])
+    };
+    var exportResolver = new SteamAppIdResolver((_, _) => Task.FromResult<string?>("730"));
+    var builtPlatformExports = await PlatformAchievementExportBuilder.BuildAsync(
+        [platformMetadata, new AchievementExportFile("AppID/731/achievements.json", "731", 1,
+            """{"LOCKED":{"earned":false,"earned_time":0}}""")],
+        platformSnapshots, exportResolver,
+        new Dictionary<string, string> { ["epic:zero-unlock-game"] = "731" });
+    var mappedAchievementJson = builtPlatformExports.Files.Single(f => f.RelativePath == "AppID/730/achievements.json");
+    using var mappedDoc = JsonDocument.Parse(mappedAchievementJson.Json);
+    Check(mappedDoc.RootElement.TryGetProperty("BASE_ACHIEVEMENT", out var baseState)
+        && baseState.GetProperty("earned").GetBoolean(),
+        "platform exporter seeds from existing AppID metadata so previous unlocks stay present");
+    Check(mappedDoc.RootElement.TryGetProperty("ACH_1", out var crossSourceState)
+        && crossSourceState.GetProperty("earned").GetBoolean()
+        && crossSourceState.GetProperty("earned_time").GetInt64() == 1700001000,
+        "production platform exporter unions multiple sources without downgrading earned state or time");
+    Check(mappedDoc.RootElement.TryGetProperty("ACH_2", out var secondSourceState)
+        && secondSourceState.GetProperty("earned").GetBoolean()
+        && mappedDoc.RootElement.TryGetProperty("ACH_3", out var recompState)
+        && recompState.GetProperty("earned").GetBoolean(),
+        "production platform exporter includes disjoint achievement unlocks from each mapped source");
+    Check(!mappedDoc.RootElement.TryGetProperty("UNKNOWN_STATE", out _),
+        "production platform exporter omits achievement states that the source did not know");
+    Check(new[] { "Epic.platform", "GOG.platform", "PS4Recomp.platform" }
+            .All(name => builtPlatformExports.Files.Any(f => f.RelativePath == "AppID/730/" + name && f.Json.Length == 0)),
+        "production platform exporter emits empty source markers for non-Steam platforms");
+    Check(!builtPlatformExports.Files.Any(file => file.AppId == "731"),
+        "GitHub platform export omits achievements and markers for mapped games with no unlocked achievements");
+    var repeatedPlatformExports = await PlatformAchievementExportBuilder.BuildAsync(
+        builtPlatformExports.Files, platformSnapshots, exportResolver,
+        new Dictionary<string, string> { ["epic:zero-unlock-game"] = "731" });
+    Check(repeatedPlatformExports.Files.Count == builtPlatformExports.Files.Count
+        && repeatedPlatformExports.Files.All(file => builtPlatformExports.Files.Any(original =>
+            original.RelativePath == file.RelativePath && original.Json == file.Json)),
+        "production platform export is idempotent for identical source snapshots");
+    var desktopMainViewModelSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "ViewModels", "MainViewModel.cs"));
+    Check(desktopMainViewModelSource.Contains("PlatformAchievementExportBuilder.BuildAsync(", StringComparison.Ordinal)
+        && desktopMainViewModelSource.Split("BuildGitHubAchievementExportsAsync();", StringSplitOptions.None).Length - 1 == 2,
+        "both GitHub preview and bulk sync use the production multi-platform exporter");
 
     // 9. GitHub Sync Client Path Validation & Marker Support
     GitHubAchievementSyncClient.ValidateExportFilePath("AppID/730/achievements.json", "730");
@@ -2600,6 +3051,21 @@ try
     Check(existingXbox360Adapter.Platform == "xbox360", "Existing Xbox360DataAdapter retains platform identity");
     var existingRaAdapter = new RetroAchievementsDataAdapter();
     Check(existingRaAdapter.Platform == "retroachievements", "Existing RetroAchievementsDataAdapter retains platform identity");
+    var epicFixtureRoot = Path.Combine(tempRoot, "EpicLocal", "NemirtingasEpicEmu");
+    Directory.CreateDirectory(Path.Combine(epicFixtureRoot, "test-namespace"));
+    await File.WriteAllTextAsync(Path.Combine(epicFixtureRoot, "test-namespace", "achievements.json"),
+        """{"EPIC_FIRST":{"earned":true,"earned_time":1700000000},"EPIC_SECOND":{"earned":false,"earned_time":0}}""");
+    var epicAdapter = new EpicDataAdapter(new PlatformSourceOptions { EpicRoot = epicFixtureRoot });
+    var epicResult = await epicAdapter.CollectAsync(new PlatformSourceOptions { EpicRoot = epicFixtureRoot });
+    Check(epicAdapter.IsConfigured && epicResult.Games.Count == 1
+        && epicResult.Games[0].Achievements.Any(item => item.Id == "EPIC_FIRST" && item.Earned)
+        && epicAdapter.ConfigurationHint!.Contains("documented public APIs", StringComparison.Ordinal),
+        "Epic platform import reads local emulator progress and clearly describes its documented API limit");
+    var epicAdapterSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Core", "Platforms", "StorePlatformAdapters.cs"));
+    var epicDesktopSource = File.ReadAllText(Path.Combine(repositoryRoot.FullName, "src", "AchievementSync.Desktop", "MainWindow.xaml"));
+    Check(!epicAdapterSource.Contains("api.epicgames.dev/epic/achievements/v1", StringComparison.Ordinal)
+        && !epicDesktopSource.Contains("Connect Epic", StringComparison.Ordinal),
+        "Epic platform UI and adapter do not advertise or call an undocumented account-wide achievements endpoint");
 
     if (args.Contains("--live-github-sync", StringComparer.OrdinalIgnoreCase))
     {
@@ -2675,6 +3141,70 @@ bool IsImageFile(string path)
     {
         return false;
     }
+}
+
+byte[] EncryptPs4EsfmFixture(string npcommid, string xml,
+    string keyHex = "21F41A6BAD8A1D3ECA7AD586C101B7A9")
+{
+    var key = Convert.FromHexString(keyHex);
+    var identity = new byte[16];
+    Encoding.ASCII.GetBytes(npcommid).CopyTo(identity, 0);
+    using var keyGenerator = Aes.Create();
+    keyGenerator.Key = key;
+    keyGenerator.IV = new byte[16];
+    keyGenerator.Mode = CipherMode.CBC;
+    keyGenerator.Padding = PaddingMode.None;
+    using var keyEncryptor = keyGenerator.CreateEncryptor();
+    var derivedKey = keyEncryptor.TransformFinalBlock(identity, 0, identity.Length);
+
+    var plain = Encoding.UTF8.GetBytes(xml);
+    Array.Resize(ref plain, (plain.Length + 15) / 16 * 16);
+    var iv = Enumerable.Range(0, 16).Select(value => (byte)value).ToArray();
+    using var encryptAes = Aes.Create();
+    encryptAes.Key = derivedKey;
+    encryptAes.IV = iv;
+    encryptAes.Mode = CipherMode.CBC;
+    encryptAes.Padding = PaddingMode.None;
+    using var encryptor = encryptAes.CreateEncryptor();
+    var cipherText = encryptor.TransformFinalBlock(plain, 0, plain.Length);
+    return [.. iv, .. cipherText];
+}
+
+byte[] BuildPs4TrpFixture(string entryName, byte[] payload)
+{
+    const int entryOffset = 96;
+    const int entryStride = 64;
+    var dataOffset = entryOffset + entryStride;
+    var bytes = new byte[dataOffset + payload.Length];
+    BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0, 4), 0xdca24d00);
+    BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16, 4), 1);
+    BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(20, 4), entryStride);
+    Encoding.ASCII.GetBytes(entryName).CopyTo(bytes, entryOffset);
+    BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(entryOffset + 32, 8), (ulong)dataOffset);
+    BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(entryOffset + 40, 8), (ulong)payload.Length);
+    payload.CopyTo(bytes, dataOffset);
+    return bytes;
+}
+
+byte[] BuildPs4NpbindFixture(string npcommid, int trophySlot)
+{
+    var bytes = new byte[128 + 4 * 4 + Encoding.ASCII.GetByteCount(npcommid) + 1 + 152];
+    BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0, 4), 0xd294a018);
+    BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(24, 8), 1);
+    var position = 128;
+    void WriteField(ushort type, byte[] value)
+    {
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(position, 2), type);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(position + 2, 2), checked((ushort)value.Length));
+        position += 4;
+        value.CopyTo(bytes, position);
+        position += value.Length;
+    }
+    WriteField(0x10, Encoding.ASCII.GetBytes(npcommid));
+    WriteField(0x11, Encoding.ASCII.GetBytes(trophySlot.ToString(CultureInfo.InvariantCulture)));
+    WriteField(0, []);
+    WriteField(0, []);
+    return bytes;
 }
 
 HttpResponseMessage JsonResponse(string content) => new(HttpStatusCode.OK)

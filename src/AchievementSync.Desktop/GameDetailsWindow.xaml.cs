@@ -91,7 +91,7 @@ public partial class GameDetailsWindow : Window
             var imageDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "AchievementSync", "Metadata", profile.AppId, "images");
             var imageCount = Directory.Exists(imageDirectory) ? Directory.EnumerateFiles(imageDirectory).Count() : 0;
-            AppLog.Info($"Achievement icons checked for AppID {profile.AppId}; images={imageCount}; path={imageDirectory}.");
+            AppLog.Info($"Achievement icons checked for AppID {profile.AppId}; images={imageCount}.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or HttpRequestException
                                            or JsonException or TaskCanceledException or InvalidDataException or NotSupportedException)

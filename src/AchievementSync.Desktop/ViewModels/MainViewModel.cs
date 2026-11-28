@@ -33,6 +33,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly AchievementScanner _scanner = new();
     private readonly LocalAchievementMetadataCache _localMetadataCache;
     private readonly LocalAchievementCatalogCache _localCatalogCache;
+    private readonly LocalMetadataGameLibrary _metadataGameLibrary;
     private readonly JsonAchievementParser _metadataProgressParser = new();
     private readonly PlatformAdapterRegistry _platformAdapters = new();
     private readonly SteamMetadataCache _metadataCache;
@@ -51,7 +52,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly WindowsCredentialTokenStore _githubTokenStore = new();
     private readonly WindowsCredentialTokenStore _retroAchievementsKeyStore = new("AchievementSync/Platforms/RetroAchievementsApiKey");
     private readonly WindowsCredentialTokenStore _xboxCredentialStore = new("AchievementSync/Platforms/XboxCredential");
-    private readonly WindowsCredentialTokenStore _epicCredentialStore = new("AchievementSync/Platforms/EpicCredential");
+    private readonly WindowsCredentialTokenStore _epicCredentialStore = new("AchievementSync/Platforms/EpicCredential"); // retained so Clear saved tokens removes credentials from earlier builds
     private readonly GameplaySessionTracker _gameplayTracker;
     private readonly AchievementUnlockTracker _unlockTracker;
     private readonly IStartupRegistration _startupRegistration;
@@ -100,7 +101,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private long _backupBytesProcessed;
     private long _backupBytesTotal;
     private string _backupStage = string.Empty;
-    private string _bulkSyncStatus = "Sync all pushes only every game's achievements.json (AppID/<id>/achievements.json) in one commit, then reports each file.";
+    private string _bulkSyncStatus = "Sync all exports AppID achievement JSON and platform markers from configured local sources.";
     private string _autoSyncStatus = "Auto-sync is off. Enable it to push AppID files on genuine unlocks only.";
     private string _backupStatus = "Manual save backups require confirmation. Automatic backups are off.";
     private string _restoreStatus = "Restore save files and achievements from your repository. This overwrites local files only after you confirm.";
@@ -123,14 +124,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _platformScanStatus = "Platform scan not started.";
     private IReadOnlyList<PlatformRunStatus> _platformStatuses = [];
     private string _platformCredentialStatus = "No platform API credentials saved.";
-    private static readonly (string Key, string Label)[] PlatformRootDefinitions =
+    private static readonly (string Key, string Label, string Description)[] PlatformRootDefinitions =
     [
-        ("steam", "Steam"), ("xblen", "XBLessness"), ("xboxpc", "Xbox PC"),
-        ("xbox360", "Xenia / Xbox 360"), ("gfwl", "GFWL"), ("rpcs3", "RPCS3 / PS3"),
-        ("ps4", "shadPS4"), ("ps5", "Kyty PS5"), ("epic", "Epic Games Store"),
-        ("gog", "GOG Galaxy"), ("uplay", "Ubisoft Connect"),
-        ("uplaycache", "Ubisoft Connect Cache"), ("uplayrune", "Ubisoft RUNE Saves"),
-        ("ea", "EA Desktop Logs"), ("recomp", "Recomp Ports (PS3/PS4)"), ("ladxhd", "LADXHD Recomp")
+        ("steam", "Steam", "Steam appcache stats and local achievement schemas."),
+        ("xblen", "XLiveLessNess", "Local XLiveLessNess profile and title achievement data."),
+        ("xboxpc", "Xbox PC", "Installed XboxGames or packaged GDK titles; account access is configured below."),
+        ("xenia", "Xenia", "Xenia profile Content folder containing local GPD achievement files."),
+        ("xbox360", "Xbox 360 Recomp", "Installed X360 recomp ports and their save/profile data."),
+        ("gfwl", "Games for Windows LIVE", "Local GFWL profile and achievement files."),
+        ("rpcs3", "RPCS3", "RPCS3 dev_hdd0 home trophy folders."),
+        ("ps4", "shadPS4", "Modern trophy/Xml and per-user progress, plus legacy game_data trophy files."),
+        ("ps5", "Kyty PS5", "Kyty emulator folder with extracted-game or registered _Trophies data."),
+        ("epic", "Epic Games Store", "Local Nemirtingas Epic emulator achievements.json data; account-wide cloud library/progress import is not exposed by Epic's documented public APIs."),
+        ("gog", "GOG Galaxy", "Galaxy installed-game manifests and UniverseLAN achievement data."),
+        ("uplay", "Ubisoft Connect spool", "Ubisoft spool database and local achievement state."),
+        ("uplaycache", "Ubisoft Connect cache", "Cached Ubisoft achievement definitions used when the spool has no schema."),
+        ("uplayrune", "Ubisoft RUNE saves (opt-in)", "RUNE achievements folder; this source is intentionally not enabled by default."),
+        ("ea", "EA Desktop logs", "EA Desktop EADesktopVerbose.log and rotated .bak files."),
+        ("recomp", "PS3 / PS4 Recomp ports", "PS3Recomp JSON and PS4 TROPHY.TRP/npbind.dat or decrypted XML, plus local icons/logs. Static launcher game_dir paths are read without running scripts."),
+        ("ladxhd", "LADXHD install / saves", "LADXHD Data\\Achievements plus portable or local achievement progress."),
+        ("lichii", "Lichii Switch 2 profile", "Nintendo Switch 2 profile saves under nand\\user\\save; optional achievements.json files only."),
+        ("eglantine", "Eglantine / playDB-CNT Switch 2 profile", "Eglantine stores the save profile used by playDB-CNT launches; optional achievements.json files only."),
+        ("switch2recomp", "Nintendo Switch 2 Recomp ports", "Recomp install roots with perfil\\save; optional achievements.json files only.")
     ];
 
     public MainViewModel() : this(null, null, readStoredCredential: true, enableDiagnostics: true)
@@ -170,6 +185,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _metadataCache = metadataCache ?? new SteamMetadataCache();
         _localMetadataCache = new LocalAchievementMetadataCache(null, _platformAdapters);
         _localCatalogCache = new LocalAchievementCatalogCache(MetadataRoot, _settings.EnablerAdaptersRoot);
+        _metadataGameLibrary = new LocalMetadataGameLibrary(MetadataRoot);
 
         _platformAdapters.Register(new SteamDataAdapter(_platformSourceOptions));
 
@@ -181,10 +197,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _platformScanService.Register(new Xbox360DataAdapter());
         _platformScanService.Register(new PlayStationDataAdapter());
         _platformScanService.Register(new GogDataAdapter(_platformSourceOptions));
-        _platformScanService.Register(new EpicDataAdapter(_platformSourceOptions, _viewerCatalogHttp));
+        _platformScanService.Register(new EpicDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new UplayDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new EaDesktopDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new RecompDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new Switch2EmulatorDataAdapter(_platformSourceOptions));
+        _platformScanService.Register(new OcarinaRecompDataAdapter(_platformSourceOptions));
         _platformScanService.Register(new RetroAchievementsDataAdapter(_viewerCatalogHttp));
 
         PlatformStatuses = _platformScanService.Adapters.Select(adapter =>
@@ -196,7 +214,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         PlatformSourceEntries = new ObservableCollection<PlatformSourceRootViewModel>(
             PlatformRootDefinitions.Select(definition => new PlatformSourceRootViewModel(
-                definition.Key, definition.Label, GetPlatformRoot(_platformSourceOptions, definition.Key), UpdatePlatformSourceRoot)));
+                definition.Key, definition.Label, definition.Description,
+                GetPlatformRoot(_platformSourceOptions, definition.Key), UpdatePlatformSourceRoot)));
         UpdatePlatformCredentialStatus();
 
         _viewerGameInfoClient = new ViewerGameInfoClient(_viewerCatalogHttp, cacheDirectory: Path.Combine(MetadataRoot, "ViewerCatalog"));
@@ -327,18 +346,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _settings.XboxClientId = value ?? string.Empty;
             SaveSettings();
             OnPropertyChanged(nameof(XboxClientId));
-            _platformSourceOptions = BuildPlatformSourceOptions();
-        }
-    }
-    public string EpicClientId
-    {
-        get => _settings.EpicClientId;
-        set
-        {
-            if (_settings.EpicClientId == value) return;
-            _settings.EpicClientId = value ?? string.Empty;
-            SaveSettings();
-            OnPropertyChanged(nameof(EpicClientId));
             _platformSourceOptions = BuildPlatformSourceOptions();
         }
     }
@@ -580,6 +587,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         new(Services.UnlockSoundPlayer.AchievementSync, "Achievement unlock chime"),
         new(Services.UnlockSoundPlayer.SoftTick, "Soft tick"),
         new(Services.UnlockSoundPlayer.VictoryArpeggio, "Victory arpeggio"),
+        new(Services.UnlockSoundPlayer.EpicGames, "Epic Games achievement sound"),
         new(Services.UnlockSoundPlayer.Custom, "Custom .wav file…"),
     ];
     public string NotificationSound
@@ -684,6 +692,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (string.Equals(_settings.RetroAchievementsUser, normalized, StringComparison.Ordinal)) return;
             _settings.RetroAchievementsUser = normalized;
             SaveSettings();
+            OnPropertyChanged();
+        }
+    }
+    public bool LumaPlayWatcherEnabled
+    {
+        get => _settings.LumaPlayWatcherEnabled;
+        set
+        {
+            if (_settings.LumaPlayWatcherEnabled == value) return;
+            _settings.LumaPlayWatcherEnabled = value;
+            SaveSettings();
+            _platformSourceOptions = BuildPlatformSourceOptions();
+            RefreshPlatformStatuses();
             OnPropertyChanged();
         }
     }
@@ -835,10 +856,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (!Set(ref _selectedExport, value)) return;
             OnPropertyChanged(nameof(EmptyExportMessageVisibility));
+            OnPropertyChanged(nameof(EmptyExportMessage));
         }
     }
     public bool HasPreviewFiles => ExportFiles.Count > 0;
-    public Visibility EmptyExportMessageVisibility => SelectedExport is null ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility EmptyExportMessageVisibility => SelectedExport is null || SelectedExport.IsEmptyMarker ? Visibility.Visible : Visibility.Collapsed;
+    public string EmptyExportMessage => SelectedExport?.ContentHint
+        ?? "Select a file from the list to inspect its exact JSON. Nothing is uploaded until you push.";
 
     public async Task CheckForUpdatesAsync()
     {
@@ -1067,27 +1091,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return ProfileMerger.EnrichWithCatalog(profile, catalog);
     }
 
-    private GameProfile MergeCachedMetadataProgress(GameProfile game)
-    {
-        var path = Path.Combine(MetadataRoot, game.AppId, "achievements.json");
-        if (!File.Exists(path)) return game;
-        var parsed = _metadataProgressParser.Parse(path, game.AppId).Profile;
-        if (parsed is null) return game;
-
-        var current = new ParsedProfile(
-            game.AppId,
-            "Scanned local achievement profiles",
-            string.Join(";", game.SourceFiles),
-            DateTimeOffset.UtcNow,
-            game.Achievements,
-            game.HasCompleteCatalog,
-            game.Title,
-            game.UnlistedAchievementsAreLocked);
-        var merged = ProfileMerger.Merge([current, parsed]).Single();
-        // This file is derived cache data, so keep the actual watched paths on the library card.
-        return merged with { SourceFiles = game.SourceFiles };
-    }
-
     private async Task ScanAsync()
     {
         if (IsScanning)
@@ -1116,6 +1119,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 item.IsCustom,
                 Directory.Exists(item.Path))).ToArray();
             var result = await _scanner.ScanAsync(scanLocations);
+
+            // Steam appcache is the local source for many achievements.json files. Rebuild this
+            // cache at startup so deleting AppData does not permanently remove those games from
+            // the library. Generated metadata is excluded from the recursive scanner to prevent
+            // duplicate source detection, so it is loaded explicitly below.
+            PlatformScanReport steamStartupReport;
+            await _platformScanGate.WaitAsync();
+            try
+            {
+                steamStartupReport = await _platformScanService.ScanAsync(BuildPlatformSourceOptions(), ["steam"]);
+            }
+            finally
+            {
+                _platformScanGate.Release();
+            }
+            if (steamStartupReport.Platforms.Count > 0)
+            {
+                var updatedStatuses = steamStartupReport.Platforms.ToDictionary(item => item.Platform, StringComparer.OrdinalIgnoreCase);
+                PlatformStatuses = PlatformStatuses.Select(item =>
+                    updatedStatuses.TryGetValue(item.Platform, out var updated) ? updated : item).ToArray();
+            }
+            if (steamStartupReport.GamesConverted > 0)
+                AppLog.Info($"Steam appcache startup import wrote {steamStartupReport.FilesWritten} metadata file(s) for {steamStartupReport.GamesConverted} game(s).");
+
             var cacheUpdate = await Task.Run(() => _localMetadataCache.UpdateAsync(result.SourceFiles, _platformAdapters));
             if (cacheUpdate.UpdatedFiles > 0 || cacheUpdate.FailedFiles > 0)
             {
@@ -1126,11 +1153,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (catalogUpdate.GamesUpdated > 0 || catalogUpdate.Failed > 0)
                 AppLog.Info($"Local achievement catalog cache update finished. Games={catalogUpdate.GamesUpdated}; images={catalogUpdate.ImagesStored}; failed={catalogUpdate.Failed}.");
 
-            var libraryGames = await Task.Run(() => result.Games.Select(game =>
+            var libraryGames = await Task.Run(() => _metadataGameLibrary.MergeProfiles(result.Games).Select(game =>
             {
-                var withCachedProgress = MergeCachedMetadataProgress(game);
                 var catalog = _localCatalogCache.LoadCatalog(game.AppId);
-                return catalog is null ? withCachedProgress : ProfileMerger.EnrichWithCatalog(withCachedProgress, catalog);
+                return catalog is null ? game : ProfileMerger.EnrichWithCatalog(game, catalog);
             }).ToArray());
 
             _sourceFiles = result.SourceFiles;
@@ -1314,7 +1340,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             IsGitHubSignedIn = true;
             GitHubStatus = $"Connected as {account.Login}. Choose your public repository, then build a preview.";
             RefreshGitHubAvatar();
-            AppLog.Info($"GitHub account connected: {account.Login}.");
+            AppLog.Info("GitHub account connected.");
         }
         catch (Exception exception)
         {
@@ -1365,7 +1391,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             IsGitHubSignedIn = true;
             GitHubStatus = $"Connected as {account.Login}. Review the target repository and preview before syncing.";
             RefreshGitHubAvatar();
-            AppLog.Info($"GitHub account connected with a personal access token: {account.Login}.");
+            AppLog.Info("GitHub account connected with a personal access token.");
         }
         catch (Exception exception)
         {
@@ -1414,10 +1440,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 throw new GitHubApiException("Choose a repository owned by the connected GitHub account.");
 
             var target = new GitHubSyncTarget(GitHubOwner, GitHubRepository, GitHubBranch);
-            var appIds = new HashSet<string>(Games.Select(game => game.AppId), StringComparer.Ordinal);
-            var (exports, failures) = MetadataAchievementExportPlanner.Build(MetadataRoot, appIds);
-            var planned = exports.Select(file => new AchievementExportFile(
-                file.RelativePath, file.AppId, file.KnownStates, file.Json)).ToList();
+            var exportPlan = await BuildGitHubAchievementExportsAsync();
+            var planned = exportPlan.Files;
+            var failures = exportPlan.Failures;
             if (planned.Count == 0)
             {
                 _githubPreview = null;
@@ -1426,13 +1451,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 OnPropertyChanged(nameof(HasPreviewFiles));
                 OnPropertyChanged(nameof(CanPushGitHubPreview));
                 PreviewStatus = failures.Count == 0
-                    ? "No cached achievements.json files to preview. Scan for profiles with known unlock states."
-                    : "No usable cached achievements.json files. " + string.Join(" ", failures.Take(3).Select(failure => $"{failure.AppId}: {failure.Reason}."));
+                    ? "No games with an unlocked achievement are ready to preview. Scan configured sources and review Steam AppID mappings."
+                    : "No usable local exports. " + string.Join(" ", failures.Take(3));
                 GitHubStatus = "Nothing to preview.";
                 return;
             }
             if (failures.Count > 0)
-                AppLog.Warning($"GitHub preview skipped {failures.Count} metadata file(s): {string.Join("; ", failures.Take(5).Select(failure => $"{failure.AppId} {failure.Reason}"))}");
+                AppLog.Warning($"GitHub preview skipped {failures.Count} local source item(s).");
             _githubPreview = await _githubSyncClient.BuildPreviewAsync(token, target, planned);
             ExportFiles.Clear();
             foreach (var change in _githubPreview.Changes)
@@ -1445,7 +1470,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(CanPushGitHubPreview));
             PreviewStatus = _githubPreview.Changes.Count == 0
                 ? "No remote changes are needed. Nothing will be uploaded."
-                : $"{_githubPreview.Changes.Count:N0} exact AppID file(s) ready · {_githubPreview.Changes.Sum(change => change.NewUnlockCount):N0} new unlock(s). Review each JSON file, then explicitly confirm Push.";
+                : $"{_githubPreview.Changes.Count:N0} AppID file(s) ready · {_githubPreview.Changes.Sum(change => change.NewUnlockCount):N0} new unlock(s). Review JSON and platform markers, then explicitly confirm Push.";
             GitHubStatus = _githubPreview.Changes.Count == 0
                 ? $"{target.Owner}/{target.Repository} ({target.Branch}) is up to date."
                 : $"Preview ready for {target.Owner}/{target.Repository} ({target.Branch}). Nothing has been uploaded.";
@@ -1495,7 +1520,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var paths = string.Join(Environment.NewLine, preview.Changes.Take(12).Select(change => "• " + change.RelativePath));
             if (preview.Changes.Count > 12) paths += $"{Environment.NewLine}• …and {preview.Changes.Count - 12:N0} more files (all listed in the preview).";
             var confirmation = MessageBox.Show(
-                $"Push {preview.Changes.Count:N0} achievement file(s) to {preview.Target.Owner}/{preview.Target.Repository} on branch {preview.Target.Branch}?\n\n{paths}\n\nOnly the reviewed AppID achievement JSON will be sent. Achievement IDs, earned states, and available unlock times will be visible in that repository. Original save files, local paths, and credentials are not included.",
+                $"Push {preview.Changes.Count:N0} AppID file(s) to {preview.Target.Owner}/{preview.Target.Repository} on branch {preview.Target.Branch}?\n\n{paths}\n\nReviewed achievement JSON and empty platform/blacklist markers will be sent. Achievement IDs, earned states, and available unlock times will be visible in that repository. Original save files, local paths, and credentials are not included.",
                 "Confirm GitHub achievement sync",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
@@ -1716,7 +1741,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (_isSyncAllRunning) return;
         IsSyncAllRunning = true;
-        BulkSyncStatus = "Preparing the local metadata…";
+        BulkSyncStatus = "Collecting local achievement sources…";
         try
         {
             var token = await ReadGitHubTokenAsync();
@@ -1725,17 +1750,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 throw new GitHubApiException("Choose a repository owned by the connected GitHub account.");
 
             var target = new GitHubSyncTarget(GitHubOwner, GitHubRepository, GitHubBranch);
-            var appIds = new HashSet<string>(Games.Select(game => game.AppId), StringComparer.Ordinal);
-            var (exports, failures) = MetadataAchievementExportPlanner.Build(MetadataRoot, appIds);
-            var planned = exports.Select(file => new AchievementExportFile(
-                file.RelativePath, file.AppId, file.KnownStates, file.Json)).ToList();
+            var exportPlan = await BuildGitHubAchievementExportsAsync();
+            var planned = exportPlan.Files;
+            var failures = exportPlan.Failures;
             if (planned.Count == 0)
             {
                 BulkSyncResults.Clear();
                 foreach (var failure in failures)
-                    BulkSyncResults.Add($"{failure.AppId} — failed — {failure.Reason}");
+                    BulkSyncResults.Add($"Local export — skipped — {failure}");
                 BulkSyncStatus = failures.Count == 0
-                    ? "No cached achievement metadata is ready to sync. Load or configure a supported achievement profile first."
+                    ? "No games with an unlocked achievement are ready to sync. Scan a configured source and review its AppID mapping first."
                     : $"No files were ready to sync; {failures.Count:N0} file(s) need attention.";
                 OnPropertyChanged(nameof(HasBulkSyncReport));
                 return;
@@ -1744,8 +1768,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var paths = string.Join(Environment.NewLine, planned.Take(12).Select(file => "• " + file.RelativePath));
             if (planned.Count > 12) paths += $"{Environment.NewLine}• …and {planned.Count - 12:N0} more files.";
             var confirmation = MessageBox.Show(
-                $"Sync {planned.Count:N0} AppID achievement file(s) to {GitHubOwner}/{GitHubRepository} on branch {GitHubBranch}?\n\n{paths}\n\nOnly achievement JSON will be sent. Continue?",
-                "Confirm metadata sync",
+                $"Sync {planned.Count:N0} AppID files to {GitHubOwner}/{GitHubRepository} on branch {GitHubBranch}?\n\n{paths}\n\nThis can include achievements.json, empty platform markers, and blacklist markers. Continue?",
+                "Confirm achievement sync",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
             if (confirmation != MessageBoxResult.Yes)
@@ -1754,11 +1778,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 return;
             }
 
-            GitHubStatus = "Syncing achievement metadata…";
+            GitHubStatus = "Syncing achievement files…";
             var result = await _githubSyncClient.PushBulkAsync(token, target, planned);
             BulkSyncResults.Clear();
             foreach (var failure in failures)
-                BulkSyncResults.Add($"{failure.AppId} — failed — {failure.Reason}");
+                BulkSyncResults.Add($"Local export — skipped — {failure}");
             foreach (var entry in result.Entries)
                 BulkSyncResults.Add($"{entry.AppId} — {entry.Action} — {entry.Detail}");
             BulkSyncStatus = result.Pushed ? $"Sync complete: {result.Summary}" : $"Nothing to sync: {result.Summary}";
@@ -1767,10 +1791,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 SaveSettings();
             }
             if (failures.Count > 0 && result.Pushed)
-                BulkSyncStatus += $" · {failures.Count:N0} file(s) failed";
-            if (result.CommitUrl is not null) GitHubStatus = $"Metadata synced to {target.Owner}/{target.Repository} ({target.Branch}). Commit: {result.CommitUrl}";
+                BulkSyncStatus += $" · {failures.Count:N0} source item(s) skipped";
+            if (result.CommitUrl is not null) GitHubStatus = $"Achievement files synced to {target.Owner}/{target.Repository} ({target.Branch}). Commit: {result.CommitUrl}";
             OnPropertyChanged(nameof(HasBulkSyncReport));
-            AppLog.Info($"Bulk metadata sync finished. pushed={result.Pushed}; achievementsPushed={result.AchievementFilesPushed}; unchanged={result.AchievementFilesUnchanged}; failed={result.AchievementFilesFailed + failures.Count}.");
+            AppLog.Info($"Bulk achievement sync finished. pushed={result.Pushed}; filesPushed={result.AchievementFilesPushed}; unchanged={result.AchievementFilesUnchanged}; failed={result.AchievementFilesFailed + failures.Count}.");
         }
         catch (Exception exception)
         {
@@ -1779,12 +1803,61 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 ? "Bulk sync failed: " + exception.Message
                 : "Bulk sync failed. Check the local log.";
             GitHubStatus = BulkSyncStatus;
-            AppLog.Warning($"Bulk metadata sync failed: {exception}");
+            AppLog.Warning($"Bulk achievement sync failed: {exception.GetType().Name}.");
         }
         finally
         {
             IsSyncAllRunning = false;
         }
+    }
+
+    private async Task<(IReadOnlyList<AchievementExportFile> Files, IReadOnlyList<string> Failures,
+        IReadOnlyList<SteamAppIdResolution> Resolutions)> BuildGitHubAchievementExportsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await RefreshPlatformCredentialsAsync(cancellationToken);
+        var (metadata, metadataFailures) = MetadataAchievementExportPlanner.Build(MetadataRoot);
+        var metadataFiles = metadata.Select(file => new AchievementExportFile(
+            file.RelativePath, file.AppId, file.KnownStates, file.Json)).ToArray();
+        var failures = metadataFailures
+            .Select(failure => $"AppID {failure.AppId}: {failure.Reason}")
+            .ToList();
+        var snapshots = new List<PlatformGameSnapshot>();
+        var options = BuildPlatformSourceOptions();
+
+        foreach (var adapter in _platformScanService.Adapters)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (!adapter.IsConfiguredFor(options)) continue;
+                var result = await Task.Run(
+                    () => adapter.CollectAsync(options, cancellationToken), cancellationToken).ConfigureAwait(false);
+                snapshots.AddRange(result.Games);
+                if (result.Messages.Count > 0)
+                    failures.Add($"{adapter.DisplayName}: {result.Messages.Count:N0} source item(s) skipped.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"{adapter.DisplayName}: scan skipped ({exception.GetType().Name}).");
+            }
+        }
+
+        var resolver = new SteamAppIdResolver(
+            SteamDbAppIdLookup.LookupAppIdAsync,
+            appId => _localCatalogCache.LoadCatalog(appId)?.Achievements);
+        var plan = await PlatformAchievementExportBuilder.BuildAsync(
+            metadataFiles,
+            snapshots,
+            resolver,
+            _settings.SteamAppIdOverrides,
+            _settings.PlatformBlacklist,
+            cancellationToken).ConfigureAwait(false);
+        return (plan.Files, failures, plan.Resolutions);
     }
 
     private static string MetadataRoot => Path.Combine(
@@ -1924,6 +1997,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var saves = discoveredSaves ?? await SaveFileDiscoverer.DiscoverAsync(titles);
             if (onlyAppId is not null)
                 saves = saves.Where(save => string.Equals(save.AppId, onlyAppId, StringComparison.Ordinal)).ToArray();
+            else if (discoveredSaves is null)
+            {
+                var sourceOptions = BuildPlatformSourceOptions();
+                var platformSnapshots = new List<PlatformGameSnapshot>();
+                foreach (var adapter in _platformScanService.Adapters.Where(adapter =>
+                             adapter.Platform is "xbox360" or "playstation" or "recomp" or "uplay" or "switch2" or "switch2recomp"))
+                {
+                    if (!adapter.IsConfiguredFor(sourceOptions)) continue;
+                    try
+                    {
+                        var collected = await adapter.CollectAsync(sourceOptions);
+                        platformSnapshots.AddRange(collected.Games);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                       or InvalidDataException or HttpRequestException or TaskCanceledException)
+                    {
+                        AppLog.Warning($"Save discovery skipped {adapter.DisplayName} ({exception.GetType().Name}).");
+                    }
+                }
+                var platformSaves = await SaveFileDiscoverer.DiscoverPlatformSavesAsync(platformSnapshots, sourceOptions);
+                saves = saves.Concat(platformSaves).ToArray();
+            }
             var savesByApp = saves.GroupBy(save => save.AppId, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => (IReadOnlyList<DiscoveredSaveFile>)group.ToArray(), StringComparer.Ordinal);
             if (saves.Count == 0)
@@ -1938,7 +2033,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (!savesByApp.TryGetValue(appId, out var appSaves) || appSaves.Count == 0)
                     continue;
                 var source = SaveBackupPlanner.ResolveAchievementSource(appId);
-                plans.Add(await SaveBackupPlanner.BuildAsync(appId, appSaves, source?.Path, source?.Format ?? "json"));
+                var appScopedSaves = appSaves.Where(save => save.BackupFolder is null).ToArray();
+                if (appScopedSaves.Length > 0)
+                    plans.Add(await SaveBackupPlanner.BuildAsync(appId, appScopedSaves, source?.Path, source?.Format ?? "json"));
+            }
+
+            foreach (var group in saves.Where(save => !string.IsNullOrWhiteSpace(save.BackupFolder))
+                         .GroupBy(save => save.BackupFolder!, StringComparer.OrdinalIgnoreCase))
+            {
+                var sourceSaves = group.ToArray();
+                if (sourceSaves.Length == 0) continue;
+                plans.Add(await SaveBackupPlanner.BuildAsync(sourceSaves[0].AppId, sourceSaves, null, "json",
+                    repositoryFolder: group.Key));
             }
 
             _backupFilesTotal = plans.Sum(p => p.Items.Count + 1); // items + 1 manifest per AppID
@@ -2021,18 +2127,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 throw new GitHubApiException("Choose a repository owned by the connected GitHub account.");
 
             var target = new GitHubSyncTarget(GitHubOwner, GitHubRepository, GitHubBranch);
-            var appIds = new HashSet<string>(Games.Select(game => game.AppId), StringComparer.Ordinal);
-            var plans = await _githubSyncClient.PullSaveBackupAsync(token, target, appIds);
+            // A fresh install has no library AppIDs yet. An empty filter deliberately means “enumerate the branch”.
+            var plans = await _githubSyncClient.PullSaveBackupAsync(
+                token, target, Array.Empty<string>(), BuildPlatformSourceOptions());
             if (plans.Count == 0)
             {
                 RestoreStatus = "No backups were found in the repository.";
                 return;
             }
 
-            var totalFiles = plans.Sum(plan => plan.Saves.Count);
+            var totalFiles = plans.Sum(plan => plan.Saves.Count)
+                + plans.Count(plan => !string.IsNullOrWhiteSpace(plan.AchievementsJson));
             var confirmation = MessageBox.Show(
                 $"Restore {totalFiles:N0} file(s) for {plans.Count:N0} game(s) from {GitHubOwner}/{GitHubRepository} (branch {GitHubBranch})?\n\n" +
-                "Save files and achievement files will be written to their recorded locations. Existing files at those paths will be overwritten.",
+                "Missing save files will be restored to their recorded locations. Missing achievements will be restored to the local metadata cache and, when recorded, their original source location. Existing files will be kept.",
                 "Confirm restore",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
@@ -2042,13 +2150,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             RestoreStatus = "Restoring…";
             var restored = 0;
             var failedRestore = 0;
-            var gseRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GSE Saves");
+            var restoredAchievementIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var plan in plans)
             {
                 foreach (var save in plan.Saves)
                 {
                     try
                     {
+                        if (File.Exists(save.TargetPath))
+                        {
+                            RestoreResults.Add($"{plan.AppId} — kept existing {save.RepoPath}");
+                            continue;
+                        }
+
                         var bytes = await _githubSyncClient.ReadRestoreFileAsync(token, target, plan.HeadSha, save.RepoPath);
                         if (bytes is null) { failedRestore++; RestoreResults.Add($"{plan.AppId} — {save.RepoPath} missing in repository"); continue; }
 
@@ -2058,11 +2172,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         }
                         else
                         {
-                            Directory.CreateDirectory(Path.GetDirectoryName(save.TargetPath)!);
-                            await File.WriteAllBytesAsync(save.TargetPath, bytes);
+                            var parent = Path.GetDirectoryName(save.TargetPath);
+                            if (string.IsNullOrWhiteSpace(parent)) throw new InvalidDataException("The restored save path has no parent folder.");
+                            Directory.CreateDirectory(parent);
+                            await using (var output = new FileStream(save.TargetPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                                             64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                                await output.WriteAsync(bytes);
                             restored++;
                             RestoreResults.Add($"{plan.AppId} — restored {save.RepoPath}");
                         }
+                    }
+                    catch (IOException) when (File.Exists(save.TargetPath))
+                    {
+                        RestoreResults.Add($"{plan.AppId} — kept existing {save.RepoPath}");
                     }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
                     {
@@ -2072,7 +2194,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             }
 
-            // Achievements are restored explicitly from the achievements pipeline (remote file, or local metadata as fallback).
+            // Restore viewer-compatible achievement state into the same cache consumed by the Game Library.
+            // Also recreate the recorded original file when this repository has a source mapping.
             foreach (var plan in plans)
             {
                 try
@@ -2087,40 +2210,39 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                             RestoreResults.Add($"{plan.AppId} — remote achievements.json not found; using the local cache instead");
                         }
                     }
-                    if (achievementsJson is null)
-                    {
-                        failedRestore++;
-                        RestoreResults.Add($"{plan.AppId} — achievements.json is missing remotely and locally; skipping achievement restore");
-                        continue;
-                    }
-                    if (plan.Manifest.AchievementSourcePath is null && string.IsNullOrWhiteSpace(plan.Manifest.AchievementSourceName))
-                    {
-                        failedRestore++;
-                        RestoreResults.Add($"{plan.AppId} — the manifest does not record the original achievement file path; skipping");
-                        continue;
-                    }
+                    if (achievementsJson is null) continue;
 
-                    var expandedTarget = plan.Manifest.AchievementSourcePath is null ? null : Environment.ExpandEnvironmentVariables(plan.Manifest.AchievementSourcePath);
-                    var targetPath = !string.IsNullOrWhiteSpace(expandedTarget)
-                        && Directory.Exists(Path.GetDirectoryName(expandedTarget))
-                            ? expandedTarget
-                            : Path.Combine(
-                                Directory.Exists(Path.Combine(gseRoot, plan.AppId))
-                                    ? Path.Combine(gseRoot, plan.AppId)
-                                    : Path.Combine(gseRoot, plan.AppId),
-                                plan.Manifest.AchievementSourceName ?? "achievements.json");
-                    Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-                    if (string.Equals(plan.Manifest.AchievementFormat, "ini", StringComparison.OrdinalIgnoreCase))
+                    var metadataPath = Path.Combine(MetadataRoot, plan.AppId, "achievements.json");
+                    if (!File.Exists(metadataPath))
                     {
-                        await File.WriteAllBytesAsync(targetPath, IniAchievementWriter.FromViewerJson(achievementsJson));
+                        Directory.CreateDirectory(Path.GetDirectoryName(metadataPath)!);
+                        await WriteMissingTextFileAsync(metadataPath, achievementsJson);
+                        restored++;
+                        restoredAchievementIds.Add(plan.AppId);
+                        RestoreResults.Add($"{plan.AppId} — restored achievements to the local library cache");
                     }
                     else
                     {
-                        await File.WriteAllTextAsync(targetPath, achievementsJson);
+                        RestoreResults.Add($"{plan.AppId} — kept existing local achievement cache");
                     }
 
+                    var recordedTarget = PathSanitizer.Expand(plan.Manifest.AchievementSourcePath);
+                    if (string.IsNullOrWhiteSpace(recordedTarget)) continue;
+                    if (File.Exists(recordedTarget))
+                    {
+                        RestoreResults.Add($"{plan.AppId} — kept existing {Path.GetFileName(recordedTarget)}");
+                        continue;
+                    }
+
+                    var sourceParent = Path.GetDirectoryName(recordedTarget);
+                    if (string.IsNullOrWhiteSpace(sourceParent)) continue;
+                    Directory.CreateDirectory(sourceParent);
+                    if (string.Equals(plan.Manifest.AchievementFormat, "ini", StringComparison.OrdinalIgnoreCase))
+                        await WriteMissingBytesFileAsync(recordedTarget, IniAchievementWriter.FromViewerJson(achievementsJson));
+                    else
+                        await WriteMissingTextFileAsync(recordedTarget, achievementsJson);
                     restored++;
-                    RestoreResults.Add($"{plan.AppId} — restored {Path.GetFileName(targetPath)} ({(plan.Manifest.AchievementFormat == "ini" ? "ini" : "json")})");
+                    RestoreResults.Add($"{plan.AppId} — restored source achievement file to {sourceParent}");
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
                 {
@@ -2130,6 +2252,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             RestoreStatus = $"Restore complete: {restored:N0} file(s) restored, {failedRestore:N0} failed.";
+            if (restoredAchievementIds.Count > 0)
+                await RefreshLibraryProgressFromMetadataAsync();
             OnPropertyChanged(nameof(HasRestoreReport));
             AppLog.Info(RestoreStatus);
         }
@@ -2146,6 +2270,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             IsRestoreRunning = false;
         }
+    }
+
+    private static async Task WriteMissingTextFileAsync(string path, string content)
+    {
+        await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+            16 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var writer = new StreamWriter(stream);
+        await writer.WriteAsync(content);
+    }
+
+    private static async Task WriteMissingBytesFileAsync(string path, byte[] content)
+    {
+        await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+            16 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await stream.WriteAsync(content);
     }
 
     public void SetManualGameName(GameCardViewModel game, string? title)
@@ -2334,7 +2473,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void UpdateLibrarySummary()
     {
-        var summary = GameLibrarySummary.Calculate(Games.Select(game => game.Profile));
+        var summary = GameLibrarySummary.Calculate(Games
+            .Where(game => game.Profile.UnlockedCount > 0)
+            .Select(game => game.Profile));
         TotalGames = summary.GameCount;
         TotalUnlocked = summary.TotalUnlocked;
         TotalKnownAchievements = summary.TotalKnownAchievements;
@@ -2393,7 +2534,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private bool FilterGame(object item)
     {
-        if (item is not GameCardViewModel game) return false;
+        if (item is not GameCardViewModel game || game.Profile.UnlockedCount == 0) return false;
         var matchesFilter = SelectedGameFilter switch
         {
             "Measurable progress" => game.Profile.CompletionPercent.HasValue,
@@ -2416,21 +2557,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         GamesView.Refresh();
         IsGameResultsEmpty = GamesView.IsEmpty;
+        OnPropertyChanged(nameof(HasUnlockedGames));
         OnPropertyChanged(nameof(GameResultsEmptyText));
         OnPropertyChanged(nameof(GameResultsEmptyHint));
     }
+
+    public bool HasUnlockedGames => Games.Any(game => game.Profile.UnlockedCount > 0);
 
     public string GameResultsEmptyText => IsLibraryEmpty
         ? IsScanning
             ? "Scanning your enabled sources for achievement profiles…"
             : "No supported profiles have been discovered yet."
-        : "No games match this search and filter. Clear or change them to see the library.";
+        : !HasUnlockedGames
+            ? "No games with unlocked achievements yet."
+            : "No games match this search and filter. Clear or change them to see the library.";
 
     public string GameResultsEmptyHint => IsLibraryEmpty
         ? IsScanning
             ? "AchievementSync is checking enabled local folders. Source files are read only."
             : "Add or enable a folder in Settings to load achievement profiles. Missing folders are safe to ignore."
-        : "Clear or change the search and progress filter to see games.";
+        : !HasUnlockedGames
+            ? "Only games with at least one confirmed unlock appear here. Newly unlocked games will show after their progress is detected."
+            : "Clear or change the search and progress filter to see games.";
 
     private void OnLocationChanged(LocationOptionViewModel changed)
     {
@@ -2507,6 +2655,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 string.Equals(item.Platform, selected.Platform, StringComparison.OrdinalIgnoreCase)
                     ? item with { Status = "Scanning..." }
                     : item).ToArray();
+            await RefreshPlatformCredentialsAsync();
             var options = BuildPlatformSourceOptions();
             var report = await _platformScanService.ScanAsync(options, [selected.Platform]);
             if (report.Platforms.Count > 0)
@@ -2525,7 +2674,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or HttpRequestException or TaskCanceledException)
         {
             PlatformScanStatus = $"Platform scan failed: {exception.GetType().Name}.";
-            if (_enableDiagnostics) AppLog.Warning($"Platform scan failed: {exception.Message}");
+            if (_enableDiagnostics) AppLog.Warning($"Platform scan failed: {exception.GetType().Name}.");
         }
         finally
         {
@@ -2537,43 +2686,84 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task RefreshLibraryProgressFromMetadataAsync()
     {
         var games = Games.ToArray();
-        var updates = await Task.Run(() =>
+        var refresh = await Task.Run(() =>
         {
-            var results = new List<(GameCardViewModel Game, GameProfile? Profile, ParsedProfile? Catalog)>();
+            var metadataProfiles = _metadataGameLibrary.MergeProfiles(games.Select(game => game.Profile));
+            var existingGames = games.ToDictionary(game => game.AppId, StringComparer.Ordinal);
+            var updates = new List<(GameCardViewModel Game, GameProfile? Profile, ParsedProfile? Catalog)>();
             foreach (var game in games)
             {
                 var path = Path.Combine(MetadataRoot, game.AppId, "achievements.json");
                 var parsed = File.Exists(path) ? _metadataProgressParser.Parse(path, game.AppId).Profile : null;
                 var catalog = _localCatalogCache.LoadCatalog(game.AppId);
                 if (parsed is not null || catalog is not null)
-                    results.Add((game, parsed is null ? null : ProfileMerger.Merge([parsed]).Single(), catalog));
+                    updates.Add((game, parsed is null ? null : ProfileMerger.Merge([parsed]).Single(), catalog));
             }
-            return results.ToArray();
+            var additions = metadataProfiles
+                .Where(profile => !existingGames.ContainsKey(profile.AppId))
+                .Select(profile =>
+                {
+                    var catalog = _localCatalogCache.LoadCatalog(profile.AppId);
+                    return catalog is null ? profile : ProfileMerger.EnrichWithCatalog(profile, catalog);
+                })
+                .ToArray();
+            return (Updates: updates.ToArray(), Additions: additions);
         });
 
-        if (updates.Length == 0 || Application.Current?.Dispatcher is not { } dispatcher) return;
+        if ((refresh.Updates.Length == 0 && refresh.Additions.Length == 0)
+            || Application.Current?.Dispatcher is not { } dispatcher) return;
+        var addedCards = new List<GameCardViewModel>(refresh.Additions.Length);
         await dispatcher.InvokeAsync(() =>
         {
-            foreach (var update in updates)
+            foreach (var update in refresh.Updates)
             {
                 if (update.Profile is not null) update.Game.ApplyLocalProfileUpdate(update.Profile);
                 if (update.Catalog is not null) update.Game.ApplyCatalog(update.Catalog);
+            }
+            foreach (var profile in refresh.Additions)
+            {
+                var card = new GameCardViewModel(profile);
+                if (_settings.ManualGameNames.TryGetValue(profile.AppId, out var manualName))
+                    card.ApplyManualTitle(manualName);
+                Games.Add(card);
+                addedCards.Add(card);
+            }
+            if (addedCards.Count > 0)
+            {
+                _gameplayTracker.SetLibraryGames(Games.Select(game => game.AppId), DateTimeOffset.UtcNow);
+                RefreshPlaytimeSnapshots(DateTimeOffset.UtcNow);
+                ProcessTrackingConfigurationChanged?.Invoke(this, EventArgs.Empty);
             }
             UpdateLibrarySummary();
             RefreshGamesView();
         });
 
-        foreach (var update in updates)
+        foreach (var game in refresh.Updates.Select(update => update.Game).Concat(addedCards))
         {
             try
             {
                 await Task.Run(() => ViewerAchievementsWriter.WriteAchievementsJson(
-                    update.Game.AppId, update.Game.Profile.Achievements));
+                    game.AppId, game.Profile.Achievements));
             }
             catch (Exception exception)
             {
-                AppLog.Warning($"Could not update viewer progress after the platform scan for AppID {update.Game.AppId}: {exception.GetType().Name}.");
+                AppLog.Warning($"Could not update viewer progress after the platform scan for AppID {game.AppId}: {exception.GetType().Name}.");
             }
+        }
+
+        if (addedCards.Count > 0)
+        {
+            _ = CacheScreenshotsForGamesAsync(addedCards.Select(game => game.AppId).ToArray());
+            _ = Task.Run(async () =>
+            {
+                await Task.WhenAll(addedCards.Select(LoadMetadataAsync));
+                await Task.WhenAll(addedCards.Select(LoadViewerDataAsync));
+                await dispatcher.InvokeAsync(() =>
+                {
+                    RefreshGamesView();
+                    UpdateLibrarySummary();
+                }, System.Windows.Threading.DispatcherPriority.Background);
+            });
         }
     }
 
@@ -2592,11 +2782,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 case "xblen": options.XblenRoot = expanded; break;
                 case "xboxpc": options.XboxPcRoot = expanded; break;
                 case "xbox360": options.Xbox360Root = expanded; break;
+                case "xenia": options.XeniaRoot = expanded; break;
                 case "gfwl": options.GfwlRoot = expanded; break;
                 case "rpcs3": options.Rpcs3Root = expanded; break;
                 case "ps4": options.Ps4Root = expanded; break;
                 case "ps5": options.Ps5Root = expanded; break;
-                case "xenia": options.XeniaRoot = expanded; break;
                 case "epic": options.EpicRoot = expanded; break;
                 case "gog": options.GogRoot = expanded; break;
                 case "uplay": options.UplayRoot = expanded; break;
@@ -2605,6 +2795,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 case "ea": options.EaRoot = expanded; break;
                 case "recomp": options.RecompRoot = expanded; break;
                 case "ladxhd": options.LadxhdRoot = expanded; break;
+                case "lichii": options.LichiiRoot = expanded; break;
+                case "eglantine": options.EglantineRoot = expanded; break;
+                case "switch2recomp": options.Switch2RecompRoot = expanded; break;
             }
         }
         options.RetroAchievementsUser = _settings.RetroAchievementsUser;
@@ -2619,16 +2812,39 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             options.XboxXuid = xboxCred.Xuid;
         }
 
-        options.EpicClientId = _settings.EpicClientId;
-        var epicCred = EpicStoredCredential.Parse(ReadPlatformCredential(_epicCredentialStore));
-        if (epicCred is not null)
-        {
-            options.EpicAccessToken = epicCred.AccessToken;
-            options.EpicAccountId = epicCred.AccountId;
-        }
-
         options.LumaPlayWatcherEnabled = _settings.LumaPlayWatcherEnabled;
         return options;
+    }
+
+    private async Task RefreshPlatformCredentialsAsync(CancellationToken cancellationToken = default)
+    {
+        var changed = false;
+        var xbox = XboxStoredCredential.Parse(ReadPlatformCredential(_xboxCredentialStore));
+        if (xbox?.NeedsRefresh() == true && !string.IsNullOrWhiteSpace(xbox.RefreshToken)
+            && !string.IsNullOrWhiteSpace(_settings.XboxClientId))
+        {
+            try
+            {
+                var refreshed = await new XboxAuthClient(_viewerCatalogHttp).RefreshAsync(
+                    _settings.XboxClientId, xbox.RefreshToken!, xbox.TenantId, cancellationToken);
+                StorePlatformCredential(_xboxCredentialStore, refreshed.Serialize());
+                changed = true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                AppLog.Warning($"Xbox platform token refresh failed: {exception.GetType().Name}.");
+            }
+        }
+
+        if (changed)
+        {
+            _platformSourceOptions = BuildPlatformSourceOptions();
+            UpdatePlatformCredentialStatus();
+        }
     }
 
     private static string GetPlatformRoot(PlatformSourceOptions options, string key) => key switch
@@ -2637,6 +2853,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         "xblen" => options.XblenRoot ?? string.Empty,
         "xboxpc" => options.XboxPcRoot ?? string.Empty,
         "xbox360" => options.Xbox360Root ?? string.Empty,
+        "xenia" => options.XeniaRoot ?? string.Empty,
         "gfwl" => options.GfwlRoot ?? string.Empty,
         "rpcs3" => options.Rpcs3Root ?? string.Empty,
         "ps4" => options.Ps4Root ?? string.Empty,
@@ -2649,6 +2866,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         "ea" => options.EaRoot ?? string.Empty,
         "recomp" => options.RecompRoot ?? string.Empty,
         "ladxhd" => options.LadxhdRoot ?? string.Empty,
+        "lichii" => options.LichiiRoot ?? string.Empty,
+        "eglantine" => options.EglantineRoot ?? string.Empty,
+        "switch2recomp" => options.Switch2RecompRoot ?? string.Empty,
         _ => string.Empty
     };
 
@@ -2658,12 +2878,67 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         else _settings.PlatformSourceRoots[key] = value;
         SaveSettings();
         _platformSourceOptions = BuildPlatformSourceOptions();
+        RefreshPlatformStatuses();
         OnPropertyChanged(nameof(PlatformSourceOptions));
         _platformAdapters.Register(new SteamDataAdapter(_platformSourceOptions));
         PlatformSourceRootsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public void SavePlatformCredentials(string? retroAchievementsApiKey, string? xboxCredentialJson = null, string? epicCredentialJson = null)
+    private void RefreshPlatformStatuses()
+    {
+        PlatformStatuses = _platformScanService.Adapters.Select(adapter =>
+        {
+            var configured = adapter.IsConfiguredFor(_platformSourceOptions);
+            var previous = _platformStatuses.FirstOrDefault(item =>
+                string.Equals(item.Platform, adapter.Platform, StringComparison.OrdinalIgnoreCase));
+            var status = previous is null || previous.Status == "Not configured"
+                ? configured ? "Ready to scan" : "Not configured"
+                : previous.Status;
+            return new PlatformRunStatus(adapter.Platform, adapter.DisplayName, configured,
+                adapter.ConfigurationHint, previous?.GamesFound ?? 0, status);
+        }).ToArray();
+    }
+
+    public async Task ConnectXboxPlatformAsync()
+    {
+        var clientId = _settings.XboxClientId?.Trim();
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            PlatformCredentialStatus = "Enter your Microsoft Entra public-client Application ID before connecting Xbox PC.";
+            return;
+        }
+
+        PlatformCredentialStatus = "Requesting Xbox device sign-in…";
+        try
+        {
+            var auth = new XboxAuthClient(_viewerCatalogHttp);
+            var session = await auth.StartDeviceCodeAsync(clientId, "consumers");
+            Process.Start(new ProcessStartInfo(session.VerificationUri) { UseShellExecute = true });
+            var response = MessageBox.Show(
+                $"In the browser, sign in with the Microsoft account used by the Xbox app and enter this code:\n\n{session.UserCode}\n\nContinue after approving access?",
+                "Connect Xbox PC",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Information);
+            if (response != MessageBoxResult.OK)
+            {
+                PlatformCredentialStatus = "Xbox sign-in cancelled. No token was saved.";
+                return;
+            }
+
+            PlatformCredentialStatus = "Waiting for Microsoft sign-in approval…";
+            var credential = await auth.PollForXboxSessionAsync(clientId, session);
+            StorePlatformCredential(_xboxCredentialStore, credential.Serialize());
+            _platformSourceOptions = BuildPlatformSourceOptions();
+            UpdatePlatformCredentialStatus();
+        }
+        catch (Exception exception)
+        {
+            PlatformCredentialStatus = $"Xbox sign-in failed ({exception.GetType().Name}). Check the Entra app and try again.";
+            AppLog.Warning($"Xbox platform sign-in failed: {exception.GetType().Name}.");
+        }
+    }
+
+    public void SavePlatformCredentials(string? retroAchievementsApiKey, string? xboxCredentialJson = null)
     {
         try
         {
@@ -2671,9 +2946,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 StorePlatformCredential(_retroAchievementsKeyStore, retroAchievementsApiKey);
             if (!string.IsNullOrWhiteSpace(xboxCredentialJson))
                 StorePlatformCredential(_xboxCredentialStore, xboxCredentialJson);
-            if (!string.IsNullOrWhiteSpace(epicCredentialJson))
-                StorePlatformCredential(_epicCredentialStore, epicCredentialJson);
-
             _platformSourceOptions = BuildPlatformSourceOptions();
             UpdatePlatformCredentialStatus();
         }
@@ -2703,6 +2975,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task OpenMappingReviewAsync()
     {
+        await RefreshPlatformCredentialsAsync();
         var options = BuildPlatformSourceOptions();
         var resolutions = new List<SteamAppIdResolution>();
         var resolver = new SteamAppIdResolver(
@@ -2726,7 +2999,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
             catch (Exception ex)
             {
-                AppLog.Warning($"Mapping review collection error ({adapter.Platform}): {ex.Message}");
+                AppLog.Warning($"Mapping review collection failed ({adapter.Platform}): {ex.GetType().Name}.");
             }
         }
 
@@ -2840,12 +3113,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         var ra = !string.IsNullOrWhiteSpace(ReadPlatformCredential(_retroAchievementsKeyStore));
         var xbox = XboxStoredCredential.Parse(ReadPlatformCredential(_xboxCredentialStore)) is not null;
-        var epic = EpicStoredCredential.Parse(ReadPlatformCredential(_epicCredentialStore)) is not null;
+        var legacyEpicCredential = !string.IsNullOrWhiteSpace(ReadPlatformCredential(_epicCredentialStore));
         var parts = new List<string>();
         parts.Add($"RetroAchievements: {(ra ? "saved" : "not set")}");
         parts.Add($"Xbox PC: {(xbox ? "connected" : "not set")}");
-        parts.Add($"Epic Games: {(epic ? "connected" : "not set")}");
-        PlatformCredentialStatus = string.Join(" | ", parts) + ". Stored in Windows Credential Manager.";
+        parts.Add("Epic Games: local emulator data only; no documented account-wide achievement API");
+        if (legacyEpicCredential) parts.Add("unused Epic credential from an earlier build retained until cleared");
+        PlatformCredentialStatus = string.Join(" | ", parts) + ". Secrets are stored in Windows Credential Manager.";
         OnPropertyChanged(nameof(PlatformCredentialStatus));
     }
 

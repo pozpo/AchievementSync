@@ -51,7 +51,8 @@ public static class SaveBackupPlanner
         IReadOnlyList<DiscoveredSaveFile> saves,
         string? achievementSourcePath,
         string achievementFormat,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? repositoryFolder = null)
     {
         // No file I/O: the SHA-256 was already computed during discovery. Items carry the source path
         // and hash; content is loaded lazily during the upload phase for changed files only.
@@ -70,9 +71,10 @@ public static class SaveBackupPlanner
             achievementFormat,
             achievementSourcePath is null ? null : PathSanitizer.Sanitize(achievementSourcePath),
             achievementSourcePath is null ? null : Path.GetFileName(achievementSourcePath),
-            manifestSaves);
+            manifestSaves,
+            repositoryFolder);
 
-        return Task.FromResult(new SaveBackupPlan(appId, items, manifest));
+        return Task.FromResult(new SaveBackupPlan(appId, items, manifest, repositoryFolder));
     }
 
     private static IEnumerable<(string Key, string Template)> SaveFileDiscovererRoots() =>
